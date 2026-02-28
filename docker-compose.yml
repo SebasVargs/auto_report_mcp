@@ -1,0 +1,26 @@
+version: "3.9"
+
+services:
+  auto-report-mcp:
+    build: .
+    container_name: auto-report-mcp
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data                     # daily inputs + processed chunks
+      - ./vector_db:/app/vector_db           # ChromaDB persistence
+      - ./output_reports:/app/output_reports # generated .docx files
+      - ./.env:/app/.env:ro                  # secrets — read-only
+    environment:
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  vector_db:
+  output_reports:

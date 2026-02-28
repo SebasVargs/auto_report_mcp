@@ -1,0 +1,72 @@
+{
+  "report_date": "2025-01-15",
+  "report_type": "project_progress",
+  "project_name": "Portal de Clientes v2",
+  "project_version": "2.3.1",
+  "environment": "PRODUCCIÓN",
+  "prepared_by": "María López — PM",
+  "test_cases": [],
+  "tasks": [
+    {
+      "task_id": "US-201",
+      "title": "Módulo de autenticación SSO",
+      "assignee": "Carlos Ruiz",
+      "status": "DONE",
+      "progress_pct": 100,
+      "sprint": "Sprint 12",
+      "blockers": [],
+      "notes": "Entregado y validado por QA"
+    },
+    {
+      "task_id": "US-202",
+      "title": "API de pedidos — endpoint creación",
+      "assignee": "Ana Torres",
+      "status": "IN_PROGRESS",
+      "progress_pct": 75,
+      "sprint": "Sprint 12",
+      "blockers": ["DEF-117 pendiente de corrección"],
+      "notes": "Funcionalidad core lista. Pendiente fix para pedidos con >10 líneas"
+    },
+    {
+      "task_id": "US-203",
+      "title": "Integración servicio de facturación",
+      "assignee": "Pedro Gómez",
+      "status": "BLOCKED",
+      "progress_pct": 40,
+      "sprint": "Sprint 12",
+      "blockers": ["Ambiente QA de facturación no disponible"],
+      "notes": "En espera de infraestructura"
+    },
+    {
+      "task_id": "US-204",
+      "title": "Dashboard ejecutivo — métricas de ventas",
+      "assignee": "Laura Vega",
+      "status": "DONE",
+      "progress_pct": 100,
+      "sprint": "Sprint 12",
+      "blockers": [],
+      "notes": "Aprobado por stakeholders en demo del 14/01"
+    },
+    {
+      "task_id": "US-205",
+      "title": "Notificaciones push — pedidos en tránsito",
+      "assignee": "Carlos Ruiz",
+      "status": "TODO",
+      "progress_pct": 0,
+      "sprint": "Sprint 13",
+      "blockers": [],
+      "notes": "Planificado para inicio de sprint 13"
+    }
+  ],
+  "general_notes": "Sprint 12 avanza al 68% de completitud. El bloqueo en facturación es el principal riesgo para el cierre del sprint previsto para el 20/01.",
+  "risks": [
+    "Bloqueo en servicio de facturación puede retrasar cierre del sprint 12",
+    "DEF-117 en pedidos puede escalar si no se prioriza en sprint 13",
+    "Dependencia de infraestructura externa sin SLA definido"
+  ],
+  "next_steps": [
+    "Escalar bloqueo de facturación a nivel gerencial — solicitar SLA de resolución",
+    "Planificar buffer en sprint 13 para DEF-117",
+    "Actualizar roadmap si sprint 12 no cierra en fecha"
+  ]
+}

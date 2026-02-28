@@ -1,0 +1,75 @@
+{
+  "report_date": "2025-01-15",
+  "report_type": "functional_tests",
+  "project_name": "Portal de Clientes v2",
+  "project_version": "2.3.1",
+  "environment": "QA",
+  "prepared_by": "Equipo QA — Juan Pérez",
+  "test_cases": [
+    {
+      "test_id": "TC-001",
+      "test_name": "Autenticación con credenciales válidas",
+      "module": "Autenticación",
+      "status": "PASS",
+      "execution_time_s": 1.2,
+      "defects": [],
+      "notes": "Flujo nominal ejecutado sin incidencias"
+    },
+    {
+      "test_id": "TC-002",
+      "test_name": "Autenticación con credenciales inválidas — bloqueo tras 3 intentos",
+      "module": "Autenticación",
+      "status": "PASS",
+      "execution_time_s": 3.5,
+      "defects": [],
+      "notes": ""
+    },
+    {
+      "test_id": "TC-003",
+      "test_name": "Creación de pedido con líneas múltiples",
+      "module": "Pedidos",
+      "status": "FAIL",
+      "execution_time_s": 8.1,
+      "defects": ["DEF-117"],
+      "notes": "Error 500 al agregar más de 10 líneas al pedido"
+    },
+    {
+      "test_id": "TC-004",
+      "test_name": "Consulta de historial de pedidos — paginación",
+      "module": "Pedidos",
+      "status": "PASS",
+      "execution_time_s": 2.3,
+      "defects": [],
+      "notes": ""
+    },
+    {
+      "test_id": "TC-005",
+      "test_name": "Generación de factura PDF",
+      "module": "Facturación",
+      "status": "BLOCKED",
+      "execution_time_s": 0.0,
+      "defects": ["DEF-118"],
+      "notes": "Servicio de facturación no disponible en QA — bloqueado por infraestructura"
+    },
+    {
+      "test_id": "TC-006",
+      "test_name": "Exportación de reporte de ventas a Excel",
+      "module": "Reportes",
+      "status": "PASS",
+      "execution_time_s": 5.7,
+      "defects": [],
+      "notes": "Archivo generado correctamente con 500 registros de prueba"
+    }
+  ],
+  "tasks": [],
+  "general_notes": "Sesión de pruebas del sprint 12. Se completaron 6 de 8 casos planificados. 2 casos pendientes de ejecutar en sesión del 16/01.",
+  "risks": [
+    "Servicio de facturación no disponible — impacta 2 casos de prueba adicionales",
+    "Defecto DEF-117 puede afectar casos de integración de pedidos en sprint 13"
+  ],
+  "next_steps": [
+    "Ejecutar TC-007 y TC-008 el 16/01 una vez disponible el ambiente",
+    "Levantar incidente con infraestructura para restablecer servicio de facturación",
+    "Asignar DEF-117 al equipo de backend para corrección en sprint 13"
+  ]
+}
