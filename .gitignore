@@ -34,6 +34,7 @@ coverage.xml
 *.sveditor
 .hypothesis/
 .pytest_cache/
+fix_indent.py
 
 # IDEs and Editors
 .idea/

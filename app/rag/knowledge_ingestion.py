@@ -89,6 +89,44 @@ class KnowledgeIngestionPipeline:
         )
         return len(chunks)
 
+    def find_similar_notes(self, text: str, threshold: float = 0.5) -> list[dict]:
+        """
+        Embed ``text`` and search the knowledge collection for existing note
+        chunks (type="note") with a relevance_score >= threshold.
+
+        Returns a list of matching chunk dicts (id, content, metadata,
+        relevance_score), sorted by relevance descending.
+        Only notes are searched — context_report chunks are excluded.
+        """
+        if not text.strip():
+            return []
+
+        query_embedding = self._emb.embed_batch([text])[0]
+        results = self._vs.query(
+            collection_name=self._collection,
+            query_embedding=query_embedding,
+            top_k=5,
+            where={"type": "note"},
+        )
+        similar = [r for r in results if r["relevance_score"] >= threshold]
+        logger.debug(
+            f"find_similar_notes: {len(similar)} match(es) above threshold {threshold}"
+        )
+        return similar
+
+    def delete_notes(self, note_ids: list[str]) -> None:
+        """
+        Remove specific note chunks from the knowledge collection by their IDs.
+        Called during smart consolidation after the user confirms a merge.
+        """
+        if not note_ids:
+            return
+        self._vs.delete_chunks(
+            collection_name=self._collection,
+            ids=note_ids,
+        )
+        logger.info(f"Deleted {len(note_ids)} note chunk(s) from '{self._collection}'")
+
     def ingest_all_context_reports(self) -> dict[str, int]:
         """
         Scan context_reports/ for .docx files not yet in the registry.

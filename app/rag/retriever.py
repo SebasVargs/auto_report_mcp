@@ -92,11 +92,29 @@ class StyleRetriever:
         - Technical description of results
         - Conclusions / recommendations style
         """
-        queries = [
-            f"resumen ejecutivo informe {daily_input.report_type.value} {daily_input.project_name}",
-            f"resultados pruebas funcionales ambiente {daily_input.environment}",
-            f"conclusiones recomendaciones informe técnico",
+        from app.models.report_model import ReportType
+
+        type_queries = {
+            ReportType.FUNCTIONAL_TESTS: [
+                f"resultados pruebas funcionalidad caja negra equivalencia informe {daily_input.project_name}",
+            ],
+            ReportType.INTEGRATION_TESTS: [
+                f"resultados pruebas integración dependencia módulo cobertura caja blanca informe {daily_input.project_name}",
+            ],
+            ReportType.UNIT_TESTS: [
+                f"resultados pruebas unitarias cobertura sentencia rama pytest clase informe {daily_input.project_name}",
+            ],
+        }
+
+        # Select type-specific queries or fallback for PROGRESS
+        base_type_query = type_queries.get(daily_input.report_type, [
             f"avance proyecto estado tareas sprint",
+        ])[0]
+
+        queries = [
+            f"resumen ejecutivo informe {daily_input.report_type} {daily_input.project_name}",
+            base_type_query,
+            f"conclusiones recomendaciones informe técnico",
         ]
 
         # Add domain-specific queries from content

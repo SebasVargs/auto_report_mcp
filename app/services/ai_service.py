@@ -50,20 +50,20 @@ class AIService:
         daily_input: DailyInput,
         style_context: StyleContext,
     ) -> GeneratedReport:
-        """
-        Full report generation pipeline.
-        Returns a GeneratedReport domain object.
-        """
         logger.info(f"Generating report for {daily_input.report_date} | {daily_input.report_type}")
 
         style_examples = style_context.as_context_string
 
-        # Executive summary is not rendered for functional_tests reports, skip the LLM call
-        if daily_input.report_type == ReportType.FUNCTIONAL_TESTS:
+        # Executive summary is not rendered for test reports (summary is in the table)
+        if daily_input.report_type in (
+            ReportType.FUNCTIONAL_TESTS,
+            ReportType.INTEGRATION_TESTS,
+            ReportType.UNIT_TESTS,
+        ):
             executive_summary = ""
         else:
             executive_summary = self._generate_executive_summary(daily_input, style_examples)
-        sections = self._generate_sections(daily_input, style_examples)
+        sections   = self._generate_sections(daily_input, style_examples)
         conclusions = self._generate_conclusions(daily_input, style_examples)
 
         return GeneratedReport(
@@ -84,19 +84,34 @@ class AIService:
     def _generate_executive_summary(
         self, data: DailyInput, style_examples: str
     ) -> str:
-        if data.report_type == ReportType.FUNCTIONAL_TESTS:
-            total = len(data.test_cases)
-            passed = sum(1 for t in data.test_cases if t.status == "PASS")
-            failed = sum(1 for t in data.test_cases if t.status == "FAIL")
+        _TEST_TYPES = {ReportType.FUNCTIONAL_TESTS, ReportType.INTEGRATION_TESTS, ReportType.UNIT_TESTS}
+        if data.report_type in _TEST_TYPES:
+            total   = len(data.test_cases)
+            passed  = sum(1 for t in data.test_cases if t.status == "PASS")
+            failed  = sum(1 for t in data.test_cases if t.status == "FAIL")
+            blocked = sum(1 for t in data.test_cases if t.status == "BLOCKED")
+
+            type_desc = {
+                ReportType.FUNCTIONAL_TESTS:  "pruebas funcionales (Caja Negra)",
+                ReportType.INTEGRATION_TESTS: "pruebas de integración (Caja Negra + Blanca)",
+                ReportType.UNIT_TESTS:        "pruebas unitarias (Caja Blanca)",
+            }.get(data.report_type, "pruebas")
+
+            # Extra metrics for white-box types
+            extra = ""
+            if data.report_type in (ReportType.INTEGRATION_TESTS, ReportType.UNIT_TESTS):
+                avg_cov = sum(t.coverage_pct or 0 for t in data.test_cases) / max(total, 1)
+                extra = f"- Cobertura promedio lograda: {avg_cov:.1f}%\n"
+
             user_prompt = f"""
-Genera el RESUMEN EJECUTIVO de un informe de pruebas funcionales.
+Genera el RESUMEN EJECUTIVO de un informe de {type_desc}.
 
 DATOS:
 - Proyecto: {data.project_name} v{data.project_version}
 - Fecha: {data.report_date}
 - Ambiente: {data.environment}
-- Total casos: {total} | Exitosos: {passed} | Fallidos: {failed}
-- Responsable: {data.prepared_by}
+- Total casos: {total} | Exitosos: {passed} | Fallidos: {failed} | Bloqueados: {blocked}
+{extra}- Responsable: {data.prepared_by}
 
 EJEMPLOS DE ESTILO DE INFORMES ANTERIORES:
 {style_examples[:2000]}
@@ -128,8 +143,9 @@ Responde con JSON: {{"summary": "<texto del resumen, 3-4 párrafos>"}}
     def _generate_sections(
         self, data: DailyInput, style_examples: str
     ) -> list[ReportSection]:
-        # For functional_tests, all content goes into the test case tables — no body sections needed
-        if data.report_type == ReportType.FUNCTIONAL_TESTS:
+        _TEST_TYPES = {ReportType.FUNCTIONAL_TESTS, ReportType.INTEGRATION_TESTS, ReportType.UNIT_TESTS}
+        # For test reports, all content goes into the per-case tables — no body sections needed
+        if data.report_type in _TEST_TYPES:
             return []
         return self._generate_project_sections(data, style_examples)
 
@@ -172,29 +188,55 @@ Responde con JSON:
     def _generate_conclusions(
         self, data: DailyInput, style_examples: str
     ) -> str:
-        if data.report_type == ReportType.FUNCTIONAL_TESTS:
-            total = len(data.test_cases)
-            passed = sum(1 for t in data.test_cases if t.status == "PASS")
-            failed = sum(1 for t in data.test_cases if t.status == "FAIL")
+        _TEST_TYPES = {ReportType.FUNCTIONAL_TESTS, ReportType.INTEGRATION_TESTS, ReportType.UNIT_TESTS}
+        if data.report_type in _TEST_TYPES:
+            total   = len(data.test_cases)
+            passed  = sum(1 for t in data.test_cases if t.status == "PASS")
+            failed  = sum(1 for t in data.test_cases if t.status == "FAIL")
             blocked = sum(1 for t in data.test_cases if t.status == "BLOCKED")
             modules = list({t.module for t in data.test_cases if t.module})
             defects = [d for t in data.test_cases for d in (t.defects or [])]
+
+            extra_context = ""
+            if data.report_type == ReportType.INTEGRATION_TESTS:
+                techniques = list({t.test_technique for t in data.test_cases if t.test_technique})
+                avg_cov    = sum(t.coverage_pct or 0 for t in data.test_cases) / max(total, 1)
+                extra_context = (
+                    f"- Técnicas empleadas: {', '.join(techniques) or 'N/A'}\n"
+                    f"- Cobertura promedio: {avg_cov:.1f}%\n"
+                )
+            elif data.report_type == ReportType.UNIT_TESTS:
+                frameworks  = list({t.test_framework for t in data.test_cases if t.test_framework})
+                avg_cov     = sum(t.coverage_pct or 0 for t in data.test_cases) / max(total, 1)
+                extra_context = (
+                    f"- Frameworks de prueba: {', '.join(frameworks) or 'N/A'}\n"
+                    f"- Cobertura promedio: {avg_cov:.1f}%\n"
+                )
+
+            type_desc = {
+                ReportType.FUNCTIONAL_TESTS:  "pruebas funcionales",
+                ReportType.INTEGRATION_TESTS: "pruebas de integración",
+                ReportType.UNIT_TESTS:        "pruebas unitarias",
+            }.get(data.report_type, "pruebas")
+
             test_context = (
                 f"- Total de casos ejecutados: {total}\n"
                 f"- Aprobados: {passed} | Fallidos: {failed} | Bloqueados: {blocked}\n"
-                f"- Módulos evaluados: {', '.join(modules) if modules else 'N/A'}\n"
-                f"- Defectos registrados: {json.dumps(defects, ensure_ascii=False) if defects else 'Ninguno'}"
+                f"- Módulos/componentes evaluados: {', '.join(modules) if modules else 'N/A'}\n"
+                f"- Defectos registrados: {json.dumps(defects, ensure_ascii=False) if defects else 'Ninguno'}\n"
+                f"{extra_context}"
             )
         else:
-            done = sum(1 for t in data.tasks if t.status == "DONE")
-            total = len(data.tasks)
+            type_desc    = "avance de proyecto"
+            done         = sum(1 for t in data.tasks if t.status == "DONE")
+            total        = len(data.tasks)
             test_context = (
                 f"- Tareas completadas: {done}/{total}\n"
                 f"- Riesgos: {json.dumps(data.risks, ensure_ascii=False)}"
             )
 
         prompt = f"""
-Genera las CONCLUSIONES Y RECOMENDACIONES del informe.
+Genera las CONCLUSIONES Y RECOMENDACIONES del informe de {type_desc}.
 
 CONTEXTO DEL PROYECTO:
 - Proyecto: {data.project_name}
@@ -238,37 +280,43 @@ Tu objetivo es extraer información de las notas del usuario y convertirla en un
 ESQUEMA ESPERADO (JSON Schema):
 {schema}
 
-INSTRUCCIONES PARA PRUEBAS FUNCIONALES ('functional_tests'):
+─── INSTRUCCIONES PRUEBAS FUNCIONALES ('functional_tests') ─ CAJA NEGRA ───
 Debes rellenar cada campo del array 'test_cases' con ALTA PRECISIÓN Y DETALLE:
+  📌 'test_technique': Técnica de caja negra: partición de equivalencia, análisis de valores límite, tabla de decisiones o transición de estados.
+  📌 'input_data': Lista de VALORES DE ENTRADA EXACTOS utilizados (ej. usuario=admin@qa.com, monto=0.01).
+  📌 'module', 'test_name', 'description': documentar el comportamiento externo observable sin revelar código interno.
+  📌 'preconditions', 'steps', 'expected_results', 'actual_results': mismas reglas detalladas de siempre.
+  📌 'status': PASS / FAIL / BLOCKED.
+  📌 Los campos de Caja Blanca (covered_method, covered_class, coverage_type, coverage_pct, test_framework) deben dejarse vacíos / 0.
 
-  📌 'test_id': Número secuencial (1, 2, 3…).
-  📌 'module': Nombre del módulo o funcionalidad evaluada (ej. "Autenticación de Usuarios", "Gestión de Pedidos").
-  📌 'test_name': Nombre descriptivo del caso (ej. "CP-01: Inicio de sesión con credenciales válidas").
-  📌 'description': Párrafo técnico detallado que explique QUÉ funcionalidad se está validando, CUÁL es el objetivo de la prueba y CUÁL es el alcance. Mínimo 2 oraciones completas.
-  📌 'preconditions': Lista de CONDICIONES PREVIAS específicas y verificables. Ejemplo:
-      - "El usuario debe tener un rol de Administrador activo en el sistema"
-      - "La base de datos de prueba debe estar poblada con registros de prueba según el set de datos QA-SET-001"
-      - "El ambiente QA debe estar disponible y conectado a los servicios externos (API, email)"
-  📌 'steps': Lista de PASOS NUMERADOS, atómicos, reproducibles y con suficiente detalle para que cualquier tester los ejecute sin ambigüedad. Ejemplo:
-      - "Abrir el navegador e ingresar la URL https://app.qa.example.com/login"
-      - "En el campo 'Usuario', ingresar el valor: admin@empresa.com"
-      - "En el campo 'Contraseña', ingresar la contraseña correspondiente"
-      - "Hacer clic en el botón 'Iniciar sesión'"
-      - "Verificar que el sistema redirige al panel principal"
-  📌 'expected_results': Lista de RESULTADOS ESPERADOS concretos y verificables, uno por comportamiento clave. Ejemplo:
-      - "El sistema valida las credenciales y redirige al dashboard en menos de 3 segundos"
-      - "El menú de navegación muestra las opciones correspondientes al rol Administrador"
-  📌 'actual_results': Lista de LO QUE REALMENTE OCURRIÓ durante la ejecución. Describe el comportamiento observado con precisión. Si fue exitoso, confirma el comportamiento. Si falló, incluye el mensaje de error exacto o la desviación observada.
-  📌 'status': PASS si todo funcionó según lo esperado, FAIL si hubo desviaciones, BLOCKED si no se pudo ejecutar.
-  📌 'prepared_by' y 'tested_by': usar nombre de metadata.
-  📌 'prepare_date' y 'test_date': usar fecha de metadata.
+─── INSTRUCCIONES PRUEBAS DE INTEGRACIÓN ('integration_tests') ─ CAJA NEGRA + BLANCA ───
+  📌 Caja Negra:
+    - 'test_technique': Técnica usada para diseñar los datos de prueba.
+    - 'input_data': Lista de entradas específicas enviadas a la interfaz o API.
+  📌 Caja Blanca:
+    - 'covered_method': método o endpoint integrado (ej. POST /api/v1/orders, UserService.createOrder()).
+    - 'coverage_type': rama (branch) / sentencia (statement) / condición / camino.
+    - 'coverage_pct': porcentaje numérico de cobertura logrado (ej. 78.5).
+  📌 Ambas cajas:
+    - 'description': combina perspectiva de flujo entre módulos (qué se integra) con los datos de entrada.
+    - 'test_level': 'Integration'.
 
-INSTRUCCIONES PARA AVANCE DE PROYECTO ('project_progress'):
+─── INSTRUCCIONES PRUEBAS UNITARIAS ('unit_tests') ─ CAJA BLANCA ───
+  📌 'covered_class': ruta de clase/módulo (ej. app.services.UserService, com.empresa.api.AuthController).
+  📌 'covered_method': firma del método o función bajo prueba (ej. validate_token(token: str) -> bool).
+  📌 'test_framework': framework y versión (ej. pytest 8.1, JUnit 5, Jest 29).
+  📌 'coverage_type': branch / statement / condition / path.
+  📌 'coverage_pct': porcentaje numérico de cobertura alcanzado.
+  📌 'test_level': 'Unit'.
+  📌 'description': describe la lógica interna del método, no el comportamiento externo.
+  📌 Los campos de Caja Negra (input_data, test_technique) pueden dejarse vacíos.
+
+─── INSTRUCCIONES AVANCE DE PROYECTO ('project_progress') ───
 - Extrae las 'tasks' con status IN_PROGRESS/DONE/BLOCKED y progress_pct estimado.
 - Llena 'risks', 'next_steps' y 'general_notes' interpretando la narrativa del usuario.
 
-REGLA CRÍTICA: Si la narrativa del usuario es breve, INFIERE y AMPLÍA el contenido de forma técnicamente coherente con el contexto dado. NUNCA dejes campos con valores genéricos como "Se realizó la prueba" o "Resultado correcto".
-ESTRICTAMENTE devuelve SOLO JSON VÁLIDO basándote en el esquema.
+REGLA CRÍTICA: Si la narrativa del usuario es breve, INFIERE y AMPLÍA el contenido de forma técnicamente coherente. NUNCA dejes campos genéricos como "Se realizó la prueba".
+ESTRICTAMENTE devuelve SOLO JSON VÁLIDO basado en el esquema.
 """
 
         user_prompt = f"""
@@ -373,15 +421,25 @@ Genera el JSON final completo agrupando todos los test_cases:
         LIST_STR_FIELDS = ("preconditions", "steps", "expected_results", "actual_results", "defects")
 
         REPORT_TYPE_ALIASES = {
-            "functional_tests": "functional_tests",
-            "pruebas_funcionales": "functional_tests",
-            "pruebas funcionales": "functional_tests",
-            "functional": "functional_tests",
-            "project_progress": "project_progress",
-            "avance_proyecto": "project_progress",
+            "functional_tests":   "functional_tests",
+            "pruebas_funcionales":"functional_tests",
+            "pruebas funcionales":"functional_tests",
+            "functional":         "functional_tests",
+            "integration_tests":  "integration_tests",
+            "pruebas_integracion":"integration_tests",
+            "pruebas integracion":"integration_tests",
+            "integracion":        "integration_tests",
+            "integration":        "integration_tests",
+            "unit_tests":         "unit_tests",
+            "pruebas_unitarias":  "unit_tests",
+            "pruebas unitarias":  "unit_tests",
+            "unitarias":          "unit_tests",
+            "unit":               "unit_tests",
+            "project_progress":   "project_progress",
+            "avance_proyecto":    "project_progress",
             "avance de proyecto": "project_progress",
-            "project progress": "project_progress",
-            "progress": "project_progress",
+            "project progress":   "project_progress",
+            "progress":           "project_progress",
         }
 
         def _normalize_report_type(val: str | None, fallback: str = "functional_tests") -> str:
@@ -433,6 +491,47 @@ Genera el JSON final completo agrupando todos los test_cases:
                         tc[field] = _coerce_to_list_of_str(tc[field])
 
         return data
+
+    # ─────────────────────────────────────────────────
+    # Note Consolidation
+    # ─────────────────────────────────────────────────
+
+    def merge_notes(self, new_note: str, existing_notes: list[str]) -> str:
+        """
+        Ask the LLM to synthesize ``new_note`` and one or more ``existing_notes``
+        into a single, comprehensive, up-to-date note.
+
+        The merged result preserves all relevant knowledge, resolves
+        contradictions by favouring the newest information (new_note), and
+        removes redundant or outdated statements.  Returns the merged note as
+        plain text.
+        """
+        existing_block = "\n\n".join(
+            f"--- NOTA EXISTENTE {i + 1} ---\n{note}"
+            for i, note in enumerate(existing_notes)
+        )
+
+        prompt = f"""Eres un asistente especializado en gestión del conocimiento técnico de proyectos de software.
+
+Tu tarea es CONSOLIDAR las siguientes notas en UNA SOLA nota unificada, clara y sin redundancias.
+
+REGLAS DE CONSOLIDACIÓN:
+- Preserva TODA la información relevante de cada nota.
+- Si hay contradicciones, prioriza la información de la NOTA NUEVA (es la más reciente).
+- Elimina repeticiones y frases redundantes.
+- Mantén el tono técnico y formal.
+- El resultado debe ser un texto continuo y cohesivo, NO una lista de viñetas.
+- No incluyas encabezados como "NOTA CONSOLIDADA:" ni prefijos de fecha — eso lo añade el sistema.
+
+NOTAS EXISTENTES:
+{existing_block}
+
+NOTA NUEVA (más reciente — tiene prioridad en caso de contradicción):
+{new_note}
+
+Responde con JSON: {{"merged_note": "<texto consolidado completo>"}}
+"""
+        return self._call_json(prompt).get("merged_note", new_note)
 
     # ─────────────────────────────────────────────────
     # LLM call helper — delegates to provider

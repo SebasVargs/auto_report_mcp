@@ -13,8 +13,10 @@ from pydantic import BaseModel, Field, field_validator
 # ─────────────────────────────────────────────────
 
 class ReportType(str, Enum):
-    FUNCTIONAL_TESTS = "functional_tests"
-    PROJECT_PROGRESS = "project_progress"
+    FUNCTIONAL_TESTS   = "functional_tests"
+    INTEGRATION_TESTS  = "integration_tests"
+    UNIT_TESTS         = "unit_tests"
+    PROJECT_PROGRESS   = "project_progress"
 
 
 class ReportStatus(str, Enum):
@@ -37,20 +39,30 @@ class TestCaseResult(BaseModel):
     execution_time_s: float = 0.0
     defects: list[str] = Field(default_factory=list)
     notes: str = ""
-    
-    # New detailed fields for PRUEBA(S) DE INTEGRACIÓN format
+
+    # Common narrative fields
     description: str = ""
     prepared_by: str = ""
     prepare_date: str = ""
     tested_by: str = ""
     test_date: str = ""
-    
     preconditions: list[str] = Field(default_factory=list)
     steps: list[str] = Field(default_factory=list)
     expected_results: list[str] = Field(default_factory=list)
     actual_results: list[str] = Field(default_factory=list)
-    
     evidence_image_filename: str = ""
+
+    # ── Black-Box fields (functional_tests + integration_tests) ──
+    test_technique: str = ""          # ej. partición equivalencia, valores límite
+    test_level: str = ""              # Acceptance / System / Integration / Unit
+    input_data: list[str] = Field(default_factory=list)  # datos de entrada específicos
+
+    # ── White-Box fields (integration_tests + unit_tests) ────────
+    covered_method: str = ""          # método o endpoint bajo prueba
+    covered_class: str = ""           # clase o módulo (ruta)
+    coverage_type: str = ""           # branch / statement / condition / path
+    coverage_pct: float = 0.0         # % de cobertura logrado
+    test_framework: str = ""          # pytest / JUnit / Mocha / etc.
 
 
 class ProjectTask(BaseModel):

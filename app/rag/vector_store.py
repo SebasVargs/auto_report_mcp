@@ -72,6 +72,17 @@ class VectorStore:
         )
         logger.debug(f"Upserted {len(chunks)} chunks into '{collection_name}'")
 
+    def delete_chunks(self, collection_name: str, ids: list[str]) -> None:
+        """
+        Delete specific chunks by ID from a collection.
+        Used during note consolidation to remove superseded notes.
+        """
+        if not ids:
+            return
+        collection = self.get_or_create_collection(collection_name)
+        collection.delete(ids=ids)
+        logger.debug(f"Deleted {len(ids)} chunk(s) from '{collection_name}'")
+
     # ─────────────────────────────────────────────────
     # Read operations
     # ─────────────────────────────────────────────────

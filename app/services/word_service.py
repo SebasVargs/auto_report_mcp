@@ -107,8 +107,10 @@ class WordService:
 
         # Report type label
         type_label = {
-            ReportType.FUNCTIONAL_TESTS: "INFORME DE PRUEBAS FUNCIONALES",
-            ReportType.PROJECT_PROGRESS: "INFORME DE AVANCE DE PROYECTO",
+            ReportType.FUNCTIONAL_TESTS:  "INFORME DE PRUEBAS FUNCIONALES",
+            ReportType.INTEGRATION_TESTS: "INFORME DE PRUEBAS DE INTEGRACIÓN",
+            ReportType.UNIT_TESTS:        "INFORME DE PRUEBAS UNITARIAS",
+            ReportType.PROJECT_PROGRESS:  "INFORME DE AVANCE DE PROYECTO",
         }.get(report.report_type, "INFORME TÉCNICO")
 
         p = doc.add_paragraph()
@@ -176,6 +178,10 @@ class WordService:
     ) -> None:
         if report.report_type == ReportType.FUNCTIONAL_TESTS and daily_input.test_cases:
             self._build_test_cases_table(doc, daily_input.test_cases)
+        elif report.report_type == ReportType.INTEGRATION_TESTS and daily_input.test_cases:
+            self._build_integration_table(doc, daily_input.test_cases)
+        elif report.report_type == ReportType.UNIT_TESTS and daily_input.test_cases:
+            self._build_unit_tests_table(doc, daily_input.test_cases)
         elif report.report_type == ReportType.PROJECT_PROGRESS and daily_input.tasks:
             self._build_tasks_table(doc, daily_input.tasks)
 
@@ -350,6 +356,238 @@ class WordService:
 
             # Space between test case tables
             doc.add_paragraph()
+
+    def _build_integration_table(
+        self, doc: Document, test_cases: list[TestCaseResult]
+    ) -> None:
+        """Integration Tests table: Caja Negra + Caja Blanca fields."""
+        doc.add_heading("PRUEBA(S) DE INTEGRACIÓN", level=2)
+
+        for tc in test_cases:
+            # 11-row table (2 extra rows for technique + method/coverage)
+            tbl = doc.add_table(rows=11, cols=4)
+            tbl.style  = "Table Grid"
+            tbl.autofit = False
+            COL_W = [Cm(3.5), Cm(7.0), Cm(1.5), Cm(3.5)]
+            for row in tbl.rows:
+                for ci, w in enumerate(COL_W):
+                    row.cells[ci].width = w
+
+            # R1: Header
+            r1 = tbl.rows[0]
+            c1 = r1.cells[0]; c1.merge(r1.cells[3])
+            c1.text = "PRUEBA DE INTEGRACIÓN"
+            self._shade_cell(c1, "DEEAF1")
+            p1 = c1.paragraphs[0]; p1.runs[0].bold = True
+            p1.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+            # R2: Módulo / Número
+            r2 = tbl.rows[1]
+            self._label_cell(r2.cells[0], "Módulo")
+            r2.cells[1].text = tc.module; self._vcenter(r2.cells[1])
+            c2_2 = r2.cells[2]; c2_2.merge(r2.cells[3])
+            c2_2.text = f"Número de la prueba {tc.test_id}"
+            c2_2.paragraphs[0].runs[0].bold = True
+            self._shade_cell(c2_2, "F2F2F2"); self._vcenter(c2_2)
+
+            # R3: Descripción
+            r3 = tbl.rows[2]
+            self._label_cell(r3.cells[0], "Descripción")
+            c3 = r3.cells[1]; c3.merge(r3.cells[3]); c3.text = tc.description
+
+            # R4: Técnica (Caja Negra)
+            r4 = tbl.rows[3]
+            self._label_cell(r4.cells[0], "Técnica (Caja Negra)")
+            c4 = r4.cells[1]; c4.merge(r4.cells[3])
+            c4.text = tc.test_technique or "Partición de equivalencia"
+
+            # R5: Método / Endpoint (Caja Blanca)
+            r5 = tbl.rows[4]
+            self._label_cell(r5.cells[0], "Método/Endpoint (Caja Blanca)")
+            c5 = r5.cells[1]; c5.merge(r5.cells[3])
+            c5.text = tc.covered_method or "—"
+
+            # R6: Cobertura
+            r6 = tbl.rows[5]
+            self._label_cell(r6.cells[0], "Cobertura")
+            r6.cells[1].text = tc.coverage_type or "—"
+            self._label_cell(r6.cells[2], "% Cobertura")
+            r6.cells[3].text = f"{tc.coverage_pct:.1f}%" if tc.coverage_pct else "—"
+
+            # R7: Preparada por / Probada por
+            r7 = tbl.rows[6]
+            self._label_cell(r7.cells[0], "Preparada por")
+            r7.cells[1].text = tc.prepared_by or "—"
+            self._label_cell(r7.cells[2], "Fecha")
+            r7.cells[3].text = tc.prepare_date or "—"
+
+            # R8: Condiciones de ejecución (datos de entrada + precondiciones)
+            r8 = tbl.rows[7]
+            c8 = r8.cells[0]; c8.merge(r8.cells[3])
+            p8 = c8.paragraphs[0]; p8.clear()
+            p8.add_run("Datos de entrada (Caja Negra)").bold = True
+            for item in (tc.input_data or tc.preconditions or ["—"]):
+                pb = c8.add_paragraph(item, style="List Bullet")
+                pb.paragraph_format.space_after = Pt(2)
+
+            # R9: Pasos
+            r9 = tbl.rows[8]
+            self._label_cell(r9.cells[0], "Pasos")
+            c9 = r9.cells[1]; c9.merge(r9.cells[3])
+            for step in (tc.steps or ["—"]):
+                p = c9.add_paragraph(step, style="List Number")
+                p.paragraph_format.space_after = Pt(2)
+            if not c9.paragraphs[0].text and len(c9.paragraphs) > 1:
+                c9.paragraphs[0]._element.getparent().remove(c9.paragraphs[0]._element)
+
+            # R10: Resultados esperados
+            r10 = tbl.rows[9]
+            c10 = r10.cells[0]; c10.merge(r10.cells[3])
+            p10 = c10.paragraphs[0]; p10.clear()
+            p10.add_run("Resultados esperados").bold = True
+            for exp in (tc.expected_results or ["—"]):
+                pe = c10.add_paragraph(exp, style="List Bullet")
+                pe.paragraph_format.space_after = Pt(2)
+
+            # R11: Resultados obtenidos
+            r11 = tbl.rows[10]
+            c11 = r11.cells[0]; c11.merge(r11.cells[3])
+            p11 = c11.paragraphs[0]; p11.clear()
+            p11.add_run("Resultados obtenidos").bold = True
+            status_map = {"PASS": "APROBADA", "FAIL": "REPROBADA", "BLOCKED": "BLOQUEADA"}
+            for act in (tc.actual_results or ["—"]):
+                pa = c11.add_paragraph(act, style="List Bullet")
+                pa.paragraph_format.space_after = Pt(2)
+            p_final = c11.add_paragraph(style="List Bullet")
+            p_final.add_run("Resultado de la prueba: ").bold = True
+            p_final.add_run(status_map.get(tc.status, tc.status))
+
+            if tc.evidence_image_filename:
+                img_path = settings.input_images_path / tc.evidence_image_filename
+                if img_path.exists():
+                    p_img = c11.add_paragraph()
+                    p_img.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    try:
+                        p_img.add_run().add_picture(str(img_path), width=Cm(14.0))
+                    except Exception as e:
+                        logger.warning(f"No se pudo insertar imagen {img_path.name}: {e}")
+
+            doc.add_paragraph()
+
+    def _build_unit_tests_table(
+        self, doc: Document, test_cases: list[TestCaseResult]
+    ) -> None:
+        """Unit Tests table: Caja Blanca only with framework and coverage details."""
+        doc.add_heading("PRUEBA(S) UNITARIA(S)", level=2)
+
+        for tc in test_cases:
+            tbl = doc.add_table(rows=11, cols=4)
+            tbl.style  = "Table Grid"
+            tbl.autofit = False
+            COL_W = [Cm(3.5), Cm(7.0), Cm(1.5), Cm(3.5)]
+            for row in tbl.rows:
+                for ci, w in enumerate(COL_W):
+                    row.cells[ci].width = w
+
+            # R1: Header
+            r1 = tbl.rows[0]
+            c1 = r1.cells[0]; c1.merge(r1.cells[3])
+            c1.text = "PRUEBA UNITARIA (CAJA BLANCA)"
+            self._shade_cell(c1, "E2EFDA")
+            p1 = c1.paragraphs[0]; p1.runs[0].bold = True
+            p1.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+            # R2: Clase / Número
+            r2 = tbl.rows[1]
+            self._label_cell(r2.cells[0], "Clase / Módulo")
+            r2.cells[1].text = tc.covered_class or tc.module
+            c2_2 = r2.cells[2]; c2_2.merge(r2.cells[3])
+            c2_2.text = f"Prueba Nº {tc.test_id}"
+            c2_2.paragraphs[0].runs[0].bold = True
+            self._shade_cell(c2_2, "F2F2F2"); self._vcenter(c2_2)
+
+            # R3: Método bajo prueba
+            r3 = tbl.rows[2]
+            self._label_cell(r3.cells[0], "Método / Función")
+            c3 = r3.cells[1]; c3.merge(r3.cells[3])
+            c3.text = tc.covered_method or tc.test_name
+
+            # R4: Framework / Cobertura
+            r4 = tbl.rows[3]
+            self._label_cell(r4.cells[0], "Framework")
+            r4.cells[1].text = tc.test_framework or "—"
+            self._label_cell(r4.cells[2], "% Cobertura")
+            r4.cells[3].text = f"{tc.coverage_pct:.1f}%" if tc.coverage_pct else "—"
+
+            # R5: Tipo cobertura / Preparado por
+            r5 = tbl.rows[4]
+            self._label_cell(r5.cells[0], "Tipo cobertura")
+            r5.cells[1].text = tc.coverage_type or "—"
+            self._label_cell(r5.cells[2], "Preparado por")
+            r5.cells[3].text = tc.prepared_by or "—"
+
+            # R6: Descripción del objetivo
+            r6 = tbl.rows[5]
+            self._label_cell(r6.cells[0], "Descripción")
+            c6 = r6.cells[1]; c6.merge(r6.cells[3])
+            c6.text = tc.description
+
+            # R7: Precondiciones / Setup
+            r7 = tbl.rows[6]
+            c7 = r7.cells[0]; c7.merge(r7.cells[3])
+            p7 = c7.paragraphs[0]; p7.clear()
+            p7.add_run("Precondiciones / Setup").bold = True
+            for pc in (tc.preconditions or ["—"]):
+                pb = c7.add_paragraph(pc, style="List Bullet")
+                pb.paragraph_format.space_after = Pt(2)
+
+            # R8: Pasos
+            r8 = tbl.rows[7]
+            self._label_cell(r8.cells[0], "Pasos")
+            c8 = r8.cells[1]; c8.merge(r8.cells[3])
+            for step in (tc.steps or ["—"]):
+                p = c8.add_paragraph(step, style="List Number")
+                p.paragraph_format.space_after = Pt(2)
+            if not c8.paragraphs[0].text and len(c8.paragraphs) > 1:
+                c8.paragraphs[0]._element.getparent().remove(c8.paragraphs[0]._element)
+
+            # R9: Resultado esperado
+            r9 = tbl.rows[8]
+            c9 = r9.cells[0]; c9.merge(r9.cells[3])
+            p9 = c9.paragraphs[0]; p9.clear()
+            p9.add_run("Resultado esperado").bold = True
+            for exp in (tc.expected_results or ["—"]):
+                pe = c9.add_paragraph(exp, style="List Bullet")
+                pe.paragraph_format.space_after = Pt(2)
+
+            # R10: Resultado real
+            r10 = tbl.rows[9]
+            c10 = r10.cells[0]; c10.merge(r10.cells[3])
+            p10 = c10.paragraphs[0]; p10.clear()
+            p10.add_run("Resultado real").bold = True
+            status_map = {"PASS": "APROBADA", "FAIL": "REPROBADA", "BLOCKED": "BLOQUEADA"}
+            for act in (tc.actual_results or ["—"]):
+                pa = c10.add_paragraph(act, style="List Bullet")
+                pa.paragraph_format.space_after = Pt(2)
+            p_final = c10.add_paragraph(style="List Bullet")
+            p_final.add_run("Resultado de la prueba: ").bold = True
+            p_final.add_run(status_map.get(tc.status, tc.status))
+
+            # R11: Notas adicionales
+            r11 = tbl.rows[10]
+            self._label_cell(r11.cells[0], "Notas")
+            c11 = r11.cells[1]; c11.merge(r11.cells[3])
+            c11.text = tc.notes or "—"
+
+            doc.add_paragraph()
+
+    @staticmethod
+    def _label_cell(cell, text: str) -> None:
+        """Shade a cell gray and bold the text (header/label style)."""
+        cell.text = text
+        cell.paragraphs[0].runs[0].bold = True
+        WordService._shade_cell(cell, "F2F2F2")
+        WordService._vcenter(cell)
 
     def _build_tasks_table(
         self, doc: Document, tasks: list[ProjectTask]
