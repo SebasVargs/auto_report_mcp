@@ -13,7 +13,11 @@ settings = get_settings()
 _NOTE_BOOST = 1.50
 
 _ANSWER_SYSTEM = """Eres un asistente técnico experto en el proyecto de software descrito en el contexto.
-Tu misión es responder preguntas sobre el historial del proyecto, el estado de módulos, pruebas anteriores y decisiones técnicas.
+Tu misión es responder preguntas sobre el historial del proyecto, el estado de módulos, pruebas anteriores, decisiones técnicas y documentación de clases/métodos de código.
+
+FUENTES DE CONOCIMIENTO DISPONIBLES:
+- Notas manuales del usuario ([NOTA DEL USUARIO]) — máxima prioridad.
+- Reportes de contexto (.docx) que pueden incluir arquitectura, API, clases, métodos, módulos.
 
 REGLA DE PRIORIDAD (CRÍTICA):
 - Los fragmentos etiquetados como [NOTA DEL USUARIO] representan el estado MÁS RECIENTE y son la verdad absoluta.
@@ -23,8 +27,9 @@ REGLA DE PRIORIDAD (CRÍTICA):
 
 OTRAS REGLAS:
 - Responde SOLO basándote en el contexto provisto. No inventes información.
+- Si el contexto menciona clases, métodos o módulos de código, detállalos con precisión incluyendo sus parámetros, retornos y propósito.
 - Sé técnico, preciso y conciso.
-- Si el contexto no contiene suficiente información, indícalo claramente.
+- Si el contexto no contiene suficiente información, indícalo claramente y sugiere al usuario ampliar la base de conocimiento.
 - Cita siempre la fuente del fragmento (ej. "Según el reporte informe_2024-03-15.docx...").
 - Responde en español."""
 
@@ -56,7 +61,7 @@ class KnowledgeRetriever:
     # Public API
     # ─────────────────────────────────────────────────
 
-    def answer(self, question: str, top_k: int = 6) -> str:
+    def answer(self, question: str, top_k: int = 10) -> str:
         """Single-turn stateless Q&A (delegates to answer_with_history with empty history)."""
         return self.answer_with_history(question, history=[], top_k=top_k)
 
@@ -64,7 +69,7 @@ class KnowledgeRetriever:
         self,
         question: str,
         history: list[dict],
-        top_k: int = 6,
+        top_k: int = 10,
     ) -> str:
         """
         RAG-based Q&A with multi-turn conversation history.

@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     drive_input_images_folder_id: str = ""
     drive_repository_images_folder_id: str = ""
     drive_context_reports_folder_id: str = ""  # folder: context_reports
+    drive_knowledge_backup_folder_id: str = ""  # folder: vector_db backups
     drive_enabled: bool = False
 
     # ── ChromaDB ─────────────────────────────────────────────────

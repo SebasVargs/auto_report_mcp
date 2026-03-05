@@ -573,31 +573,186 @@ def _cleanup_temp_files() -> None:
 
 def action_list_reports():
    section("Informes generados")
-   from app.mcp.tools.save_report_tool import SaveReportTool
+   from app.config import get_settings
+   settings = get_settings()
 
-   try:
-       tool    = SaveReportTool()
-       reports = tool.list_manifests()
-       if not reports:
-           print_info("No hay informes generados aún.")
-           return
+   # ── 1. Collect candidate reports ──────────────────────────────
+   # Format: {"name": str, "source": "drive"|"local", "id": str|None, "path": Path|None}
+   candidates: list[dict] = []
 
-       t = Table(box=box.SIMPLE_HEAD, border_style="dim", show_edge=False, padding=(0, 2))
-       t.add_column("#",       justify="right", style="dim",  min_width=3)
-       t.add_column("Fecha",   style="bold",    min_width=12)
-       t.add_column("Tipo",    style="cyan",    min_width=20)
-       t.add_column("Archivo", style="white")
+   # Local .docx files
+   local_out = Path(settings.output_reports_dir)
+   if local_out.exists():
+       for f in sorted(local_out.glob("*.docx"), reverse=True):
+           candidates.append({"name": f.name, "source": "local", "id": None, "path": f})
 
-       for i, r in enumerate(reports, 1):
-           t.add_row(
-               str(i),
-               str(r.get("report_date", "—")),
-               str(r.get("report_type", "—")),
-               Path(r.get("output_path", "—")).name,
-           )
-       console.print(t)
-   except Exception as e:
-       print_err(f"Error listando informes: {e}")
+   # Google Drive output reports
+   if settings.drive_enabled and settings.drive_output_folder_id:
+       with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as p:
+           p.add_task("Consultando Google Drive…", total=None)
+           try:
+               from app.services.drive_service import DriveService
+               drive = DriveService()
+               drive_files = drive._list_files(settings.drive_output_folder_id)
+               p.stop()
+               for f in drive_files:
+                   mime = f.get("mimeType", "")
+                   if not (mime.endswith("wordprocessingml.document") or mime == "application/vnd.google-apps.document"):
+                       continue
+                   name = f["name"]
+                   if not name.endswith(".docx"):
+                       name += ".docx"
+                   # Avoid showing files already in the local list
+                   if not any(c["name"] == name and c["source"] == "local" for c in candidates):
+                       candidates.append({"name": name, "source": "drive", "id": f["id"], "mime": mime, "path": None})
+           except Exception as e:
+               p.stop()
+               print_warn(f"No se pudo consultar Drive: {e}")
+
+   if not candidates:
+       print_info("No se encontraron informes en local ni en Drive.")
+       return
+
+   # ── 2. Show selection table ────────────────────────────────────
+   console.print()
+   t = Table(box=box.SIMPLE_HEAD, border_style="dim", show_edge=False, padding=(0, 2))
+   t.add_column("#",       justify="right", style="dim",  min_width=3)
+   t.add_column("Nombre",  style="white",   min_width=35)
+   t.add_column("Fuente",  style="cyan",    min_width=8)
+   for i, c in enumerate(candidates, 1):
+       badge = "☁ Drive" if c["source"] == "drive" else "💾 Local"
+       t.add_row(str(i), c["name"], badge)
+   console.print(t)
+
+   choices = [questionary.Choice(f"  {c['name']}", value=i-1) for i, c in enumerate(candidates, 1)]
+   choices.append(questionary.Choice("  Cancelar", value=-1))
+   idx = questionary.select("  Selecciona un informe:", choices=choices, style=MENU_STYLE).ask()
+   if idx == -1:
+       return
+
+   report = candidates[idx]
+
+   # ── 3. Ensure file is local ────────────────────────────────────
+   if report["source"] == "drive":
+       with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as p:
+           p.add_task(f"Descargando {report['name']} desde Drive…", total=None)
+           try:
+               from app.services.drive_service import DriveService
+               drive = DriveService()
+               dest = local_out / report["name"]
+               local_out.mkdir(parents=True, exist_ok=True)
+               drive._download_file(report["id"], dest, mime_type=report.get("mime", ""))
+               p.stop()
+               report["path"] = dest
+               print_ok(f"Descargado en {dest}")
+           except Exception as e:
+               p.stop()
+               print_err(f"Error al descargar: {e}")
+               return
+
+   docx_path: Path = report["path"]
+
+   # ── 4. Extract and preview text ───────────────────────────────
+   from app.rag.knowledge_ingestion import KnowledgeIngestionPipeline
+   pipeline = KnowledgeIngestionPipeline()
+   text = pipeline._extract_docx_text(docx_path)
+
+   if not text.strip():
+       print_warn("El archivo no contiene texto extraíble.")
+   else:
+       preview = text[:1200] + ("…\n[dim](texto truncado)[/dim]" if len(text) > 1200 else "")
+       console.print()
+       console.print(Panel(preview, title=f"[cyan]{docx_path.name}[/cyan]", border_style="dim", padding=(1, 2)))
+
+   # ── 5. Action menu ─────────────────────────────────────────────
+   console.print()
+   action = questionary.select(
+       "  ¿Qué deseas hacer con este informe?",
+       choices=[
+           questionary.Choice("  📂  Mover a context_reports (usar como contexto RAG)", value="context"),
+           questionary.Choice("  📝  Guardar resumen como Nota de conocimiento",         value="note"),
+           questionary.Choice("  🔁  Hacer ambas cosas",                                 value="both"),
+           questionary.Choice("  ❌  Solo visualizar — no hacer nada",                   value="skip"),
+       ],
+       style=MENU_STYLE,
+   ).ask()
+
+   do_context = action in ("context", "both")
+   do_note    = action in ("note",    "both")
+
+   # ── 5a. Move / copy to context_reports ────────────────────────
+   if do_context:
+       import shutil
+       ctx_dir = Path(settings.context_reports_dir)
+       ctx_dir.mkdir(parents=True, exist_ok=True)
+       dest_ctx = ctx_dir / docx_path.name
+       try:
+           shutil.copy2(docx_path, dest_ctx)
+           print_ok(f"Copiado a context_reports/: {docx_path.name}")
+           # Trigger ingestion right away
+           with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as p:
+               p.add_task("Ingiriendo en base de conocimiento…", total=None)
+               try:
+                   results = pipeline.ingest_all_context_reports()
+                   p.stop()
+                   chunk_count = results.get(docx_path.name, 0)
+                   if chunk_count:
+                       print_ok(f"Base de conocimiento actualizada — {chunk_count} chunk(s) añadidos.")
+                   else:
+                       # File was already in registry — force it
+                       forced = pipeline.ingest_all_context_reports(force=True)
+                       p2_count = forced.get(docx_path.name, 0)
+                       if p2_count:
+                           print_ok(f"Re-ingesta forzada exitosa — {p2_count} chunk(s).")
+                       else:
+                           print_warn("El archivo no generó nuevos chunks. Verifica que contenga texto.")
+               except Exception as e:
+                   p.stop()
+                   print_err(f"Error en ingesta: {e}")
+       except Exception as e:
+           print_err(f"Error copiando archivo: {e}")
+
+   # ── 5b. Save key content as a note ────────────────────────────
+   if do_note and text.strip():
+       console.print()
+       console.print("[dim]  Escribe el resumen/nota que quieres guardar (o presiona Enter para auto-generar una)[/dim]")
+       manual_note = questionary.text("  Nota (Enter para saltar):", multiline=True, style=MENU_STYLE).ask()
+
+       note_text = manual_note.strip() if manual_note and manual_note.strip() else None
+
+       if not note_text:
+           # Auto-summarize using AI
+           with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as p:
+               p.add_task("Generando resumen automático del informe…", total=None)
+               try:
+                   from app.services.ai_service import AIService
+                   prompt = (
+                       f"Resume el siguiente informe técnico en un párrafo conciso en español, "
+                       f"destacando módulos cubiertos, resultados y observaciones clave.\n\n{text[:3000]}"
+                   )
+                   resp = AIService()._call_json(
+                       f"Responde con JSON: {{\"summary\": \"<resumen>\"}}\n\n{prompt}"
+                   )
+                   note_text = resp.get("summary", "").strip()
+                   p.stop()
+               except Exception as e:
+                   p.stop()
+                   print_warn(f"No se pudo auto-generar el resumen: {e}")
+
+       if note_text:
+           with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as p:
+               p.add_task("Guardando nota en base de conocimiento…", total=None)
+               try:
+                   chunks = pipeline.ingest_text_note(note_text)
+                   p.stop()
+                   print_ok(f"Nota registrada — {chunks} chunk(s) añadidos al conocimiento del proyecto.")
+               except Exception as e:
+                   p.stop()
+                   print_err(f"Error guardando la nota: {e}")
+       else:
+           print_info("No se guardó ninguna nota.")
+
+
 
 # ─────────────────────────────────────────────────────────────────
 # KNOWLEDGE BASE
@@ -640,12 +795,38 @@ def action_feed_context():
            if results:
                print_ok(f"Ingestión completa — {len(results)} archivo(s):")
                for fname, count in results.items():
-                   print_info(f"{fname}: {count} chunk(s)")
+                   print_info(f"  {fname}: {count} chunk(s)")
            else:
-               print_info("Todos los reportes ya estaban ingestados. Sin cambios.")
+               print_info("Todos los reportes ya estaban ingestados.")
+               # Offer forced re-ingestion so the user can recover when ChromaDB
+               # has no chunks even though the registry says the file is processed.
+               context_dir = Path(settings.context_reports_dir)
+               available   = sorted(context_dir.glob("*.docx")) if context_dir.exists() else []
+               if available:
+                   force = questionary.confirm(
+                       "  ¿Forzar re-ingesta? (útil si la base vectorial estaba vacía)",
+                       default=False,
+                       style=MENU_STYLE,
+                   ).ask()
+                   if force:
+                       with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as p2:
+                           p2.add_task("Forzando re-ingesta de todos los archivos…", total=None)
+                           try:
+                               forced = pipeline.ingest_all_context_reports(force=True)
+                               p2.stop()
+                               if forced:
+                                   print_ok(f"Re-ingesta completada — {sum(forced.values())} chunk(s) totales:")
+                                   for fname, count in forced.items():
+                                       print_info(f"  {fname}: {count} chunk(s)")
+                               else:
+                                   print_warn("No se encontraron archivos .docx en la carpeta de contexto.")
+                           except Exception as e:
+                               p2.stop()
+                               print_err(f"Error en re-ingesta: {e}")
        except Exception as e:
            p.stop()
            print_err(f"Error en ingestión: {e}")
+
 
    console.print()
    console.print("[dim]  Opcional: añade una nota o resumen de cambios del proyecto.[/dim]")
@@ -917,6 +1098,120 @@ def action_start_server():
 # MENU
 # ─────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────
+# BACKUP & RESTORE
+# ─────────────────────────────────────────────────────────────────
+
+def action_backup_knowledge():
+   section("Backup / Restauración de Base de Conocimiento")
+   from app.config import get_settings
+   settings = get_settings()
+
+   if not settings.drive_enabled:
+       print_warn("Drive no está habilitado. Activa DRIVE_ENABLED=true en el .env.")
+       return
+
+   if not settings.drive_knowledge_backup_folder_id:
+       print_warn(
+           "No has configurado DRIVE_KNOWLEDGE_BACKUP_FOLDER_ID en el .env.\n"
+           "  1. Crea una carpeta en Google Drive llamada 'knowledge_backups'\n"
+           "  2. Copia su ID desde la URL de Drive\n"
+           "  3. Agrégalo a tu .env como:  DRIVE_KNOWLEDGE_BACKUP_FOLDER_ID=<id>"
+       )
+       return
+
+   from app.services.drive_service import DriveService
+   drive = DriveService()
+
+   action = questionary.select(
+       "  ¿Qué deseas hacer?",
+       choices=[
+           questionary.Choice("  ☁️  Crear backup ahora (subir a Drive)",       value="backup"),
+           questionary.Choice("  ⬇️  Restaurar desde un backup en Drive",       value="restore"),
+           questionary.Choice("  📋  Listar backups disponibles en Drive",       value="list"),
+           questionary.Choice("  ❌  Cancelar",                                  value="cancel"),
+       ],
+       style=MENU_STYLE,
+   ).ask()
+
+   if action == "cancel" or action is None:
+       return
+
+   # ── Backup ────────────────────────────────────────────────────
+   if action == "backup":
+       with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as p:
+           p.add_task("Comprimiendo y subiendo base de conocimiento a Drive…", total=None)
+           try:
+               url = drive.backup_knowledge()
+               p.stop()
+               print_ok("¡Backup creado exitosamente!")
+               console.print(f"  [dim]📎 {url}[/dim]")
+           except ValueError as e:
+               p.stop()
+               print_warn(str(e))
+           except Exception as e:
+               p.stop()
+               print_err(f"Error al crear el backup: {e}")
+
+   # ── List ──────────────────────────────────────────────────────
+   elif action in ("list", "restore"):
+       with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as p:
+           p.add_task("Consultando backups en Drive…", total=None)
+           try:
+               backups = drive.list_knowledge_backups()
+               p.stop()
+           except Exception as e:
+               p.stop()
+               print_err(f"Error listando backups: {e}")
+               return
+
+       if not backups:
+           print_info("No hay backups en Drive todavía. Crea uno primero.")
+           return
+
+       # Show table
+       t = Table(box=box.SIMPLE_HEAD, border_style="dim", show_edge=False, padding=(0, 2))
+       t.add_column("#",       justify="right", style="dim", min_width=3)
+       t.add_column("Archivo", style="white",   min_width=40)
+       for i, b in enumerate(backups, 1):
+           t.add_row(str(i), b["name"])
+       console.print()
+       console.print(t)
+
+       if action == "list":
+           return
+
+       # ── Restore ───────────────────────────────────────────────
+       choices_b = [questionary.Choice(f"  {b['name']}", value=i-1) for i, b in enumerate(backups, 1)]
+       choices_b.append(questionary.Choice("  Cancelar", value=-1))
+       idx = questionary.select("  Selecciona el backup a restaurar:", choices=choices_b, style=MENU_STYLE).ask()
+       if idx == -1 or idx is None:
+           return
+
+       chosen = backups[idx]
+       console.print()
+       confirm = questionary.confirm(
+           f"  ⚠️  Esto SOBREESCRIBIRÁ tu vector_db/ y knowledge_processed.json locales.\n"
+           f"  ¿Restaurar desde '{chosen['name']}'?",
+           default=False,
+           style=MENU_STYLE,
+       ).ask()
+       if not confirm:
+           print_info("Restauración cancelada.")
+           return
+
+       with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as p:
+           p.add_task(f"Descargando y restaurando {chosen['name']}…", total=None)
+           try:
+               drive.restore_knowledge(chosen["id"], chosen["name"])
+               p.stop()
+               print_ok("¡Base de conocimiento restaurada exitosamente!")
+               print_info("Reinicia el sistema para que ChromaDB reconozca los datos restaurados.")
+           except Exception as e:
+               p.stop()
+               print_err(f"Error al restaurar: {e}")
+
+
 MENU_CHOICES = [
    questionary.Separator("  Conocimiento del proyecto"),
    questionary.Choice("  Alimentar contexto",             value="feed_context"),
@@ -927,18 +1222,20 @@ MENU_CHOICES = [
    questionary.Choice("  Generar informe",                value="generate"),
    questionary.Choice("  Listar informes generados",      value="list"),
    questionary.Separator("  Sistema"),
-   questionary.Choice("  Iniciar servidor API",           value="server"),
+   questionary.Choice("  Backup / Restaurar base de conocimiento", value="backup_knowledge"),
+   questionary.Choice("  Iniciar servidor API",                    value="server"),
    questionary.Separator(),
    questionary.Choice("  Salir",                          value="exit"),
 ]
 
 ACTIONS = {
-   "feed_context":    action_feed_context,
-   "query_knowledge": action_query_knowledge,
-   "drive_sync":      action_drive_sync,
-   "generate":        action_generate,
-   "list":            action_list_reports,
-   "server":          action_start_server,
+   "feed_context":      action_feed_context,
+   "query_knowledge":   action_query_knowledge,
+   "drive_sync":        action_drive_sync,
+   "generate":          action_generate,
+   "list":              action_list_reports,
+   "backup_knowledge":  action_backup_knowledge,
+   "server":            action_start_server,
 }
 
 def main():

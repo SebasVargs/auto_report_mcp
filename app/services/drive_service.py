@@ -326,6 +326,128 @@ class DriveService:
         return count
 
     # ─────────────────────────────────────────────────
+    # Knowledge Base Backup / Restore
+    # ─────────────────────────────────────────────────
+
+    def backup_knowledge(self) -> str:
+        """
+        Creates a timestamped .zip of the vector_db directory and the knowledge
+        registry file, then uploads it to the Drive backup folder.
+
+        Returns the Drive webViewLink of the uploaded backup.
+        Raises ValueError when DRIVE_KNOWLEDGE_BACKUP_FOLDER_ID is not configured.
+        """
+        import shutil
+        import tempfile
+        from datetime import datetime, timezone
+
+        folder_id = getattr(self._settings, "drive_knowledge_backup_folder_id", "")
+        if not folder_id:
+            raise ValueError(
+                "DRIVE_KNOWLEDGE_BACKUP_FOLDER_ID no está configurado en el .env. "
+                "Crea una carpeta en Drive para backups y agrega su ID."
+            )
+
+        now_label = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+        backup_name = f"knowledge_backup_{now_label}"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            stage_dir = Path(tmp) / backup_name
+            stage_dir.mkdir()
+
+            # Copy vector_db/
+            vector_db = Path(self._settings.chroma_persist_dir)
+            if vector_db.exists():
+                shutil.copytree(str(vector_db), str(stage_dir / "vector_db"))
+
+            # Copy knowledge registry JSON
+            registry = Path("./data/knowledge_processed.json")
+            if registry.exists():
+                shutil.copy2(str(registry), str(stage_dir / "knowledge_processed.json"))
+
+            # Zip everything
+            zip_base = Path(tmp) / backup_name
+            zip_path = Path(shutil.make_archive(str(zip_base), "zip", tmp, backup_name))
+
+            # Upload to Drive
+            media = MediaFileUpload(
+                str(zip_path),
+                mimetype="application/zip",
+                resumable=True,
+            )
+            file_metadata = {
+                "name": zip_path.name,
+                "parents": [folder_id],
+            }
+            result = (
+                self._service.files()
+                .create(
+                    body=file_metadata,
+                    media_body=media,
+                    fields="id,webViewLink",
+                    supportsAllDrives=True,
+                )
+                .execute()
+            )
+
+        url = result.get("webViewLink", "")
+        logger.info(f"☁️  Knowledge backup uploaded: {zip_path.name} → {url}")
+        return url
+
+    def list_knowledge_backups(self) -> list[dict]:
+        """
+        List all knowledge backup zips in the Drive backup folder,
+        ordered by name descending (most recent first).
+        """
+        folder_id = getattr(self._settings, "drive_knowledge_backup_folder_id", "")
+        if not folder_id:
+            return []
+        files = self._list_files(folder_id, mime_filter="application/zip")
+        return sorted(files, key=lambda f: f.get("name", ""), reverse=True)
+
+    def restore_knowledge(self, file_id: str, file_name: str) -> None:
+        """
+        Download a backup zip from Drive and restore it to the local paths:
+        - vector_db/ (the ChromaDB persistence directory)
+        - data/knowledge_processed.json (the ingestion registry)
+
+        WARNING: existing local data will be overwritten.
+        """
+        import shutil
+        import tempfile
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = Path(tmp) / file_name
+            self._download_file(file_id, zip_path)
+
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(tmp)
+
+            # The zip contains a folder named like "knowledge_backup_YYYYMMDD_HHMMSS"
+            extracted_dirs = [d for d in Path(tmp).iterdir() if d.is_dir()]
+            if not extracted_dirs:
+                raise FileNotFoundError("El archivo de backup está vacío o tiene un formato inesperado.")
+            source = extracted_dirs[0]
+
+            # Restore vector_db
+            src_vdb = source / "vector_db"
+            dst_vdb = Path(self._settings.chroma_persist_dir)
+            if src_vdb.exists():
+                if dst_vdb.exists():
+                    shutil.rmtree(dst_vdb)
+                shutil.copytree(str(src_vdb), str(dst_vdb))
+                logger.info(f"✅ vector_db/ restored from {file_name}")
+
+            # Restore registry
+            src_reg = source / "knowledge_processed.json"
+            dst_reg = Path("./data/knowledge_processed.json")
+            if src_reg.exists():
+                dst_reg.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(src_reg), str(dst_reg))
+                logger.info(f"✅ knowledge_processed.json restored from {file_name}")
+
+    # ─────────────────────────────────────────────────
     # Internal helpers
     # ─────────────────────────────────────────────────
 

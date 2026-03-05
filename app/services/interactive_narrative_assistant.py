@@ -94,9 +94,11 @@ REGLAS PRUEBAS FUNCIONALES (Caja Negra):
 - Para "input_data": especifica valores exactos de entrada (ej. usuario="admin@qa.com", contraseña="Test@123").
 - Para "test_technique": sugiere partición equivalencia, valores límite, tabla de decisión o prueba de transición de estado.
 
-REGLAS PRUEBAS DE INTEGRACIÓN (Caja Negra + Caja Blanca):
-- Combina la perspectiva de flujo entre módulos (blanca) con los datos de entrada (negra).
-- Para "covered_method": indica el endpoint o método exacto (ej. POST /api/users, UserService.createUser()).
+REGLAS PRUEBAS DE INTEGRACIÓN (Caja Negra + Caja Blanca) — proporción 50/50:
+- El objetivo es documentar TANTO el flujo entre módulos (perspectiva de caja negra) COMO los métodos/clases involucrados (perspectiva de caja blanca).
+- Para "description": el primer párrafo describe el flujo de integración (qué módulos interactúan, qué datos fluyen entre ellos). El segundo menciona los métodos o endpoints específicos que participan si el contexto los incluye.
+- Para "steps": mezcla pasos de usuario (acciones externas observables) con comentarios del método interno invocado. Ejemplo: "2. El sistema llama a ActivityService.create() con los datos validados".
+- Para "covered_method": indica el endpoint o método exacto (ej. POST /api/activities, ActivityService.createActivity()). Usa los nombres del contexto si están disponibles.
 - Para "coverage_type": branch, statement, condition o path según corresponda.
 
 REGLAS PRUEBAS UNITARIAS (Caja Blanca):
@@ -221,7 +223,19 @@ class InteractiveNarrativeAssistant:
             query_parts.append(" ".join(draft.expected_results[-2:]))
 
         rag_query   = " ".join(query_parts)[:500] + f" {section_key}"
-        rag_context = self._retriever.retrieve_for_suggestion(rag_query, top_k=4)
+
+        # For white-box specific fields, steer the query toward code documentation
+        WHITE_BOX_FIELDS = {"covered_method", "covered_class", "coverage_type", "test_framework"}
+        if section_key in WHITE_BOX_FIELDS:
+            # Use module name + code-doc keywords to retrieve method/class info from context
+            code_query = f"{draft.module} método clase implementación función código {section_key}"
+            rag_query  = code_query[:500]
+        elif report_type == "integration_tests" and section_key in ("description", "steps"):
+            # For integration: blend flow terms + code-doc terms so the LLM gets both perspectives
+            code_query = f"{draft.module} flujo integración proceso {section_key} método función implementación"
+            rag_query  = code_query[:500]
+
+        rag_context = self._retriever.retrieve_for_suggestion(rag_query, top_k=8)
 
         all_sections  = get_sections_for_type(report_type)
         section_label = dict(all_sections).get(section_key, section_key)
@@ -292,6 +306,27 @@ class InteractiveNarrativeAssistant:
         }
         type_label = type_label_map.get(report_type, report_type)
 
+        white_box_instruction = ""
+        if section_key in {"covered_method", "covered_class"}:
+            white_box_instruction = (
+                "⚠️ IMPORTANTE: Si el contexto del historial contiene nombres de métodos, clases o "
+                "funciones reales, ÚSA LOS directamente en tu sugerencia. No inventes nombres genéricos. "
+                "Extrae el nombre exacto del método o clase del contexto provisto."
+            )
+        elif report_type == "integration_tests" and section_key == "steps":
+            white_box_instruction = (
+                "⚖️ BALANCE: Combina pasos desde la perspectiva del usuario (caja negra) con "
+                "los métodos internos invocados (caja blanca). Mezcla ambos en la misma lista. "
+                "Ejemplo: '3. El backend invoca ActivityService.create() con los datos del formulario'. "
+                "Si el contexto contiene nombres de métodos reales, úsalos."
+            )
+        elif report_type == "integration_tests" and section_key == "description":
+            white_box_instruction = (
+                "⚖️ BALANCE: Redacta 2 oraciones. La primera describe el flujo de integración "
+                "entre módulos (perspectiva externa/caja negra). La segunda menciona los métodos "
+                "o clases específicos involucrados si el contexto los incluye (perspectiva caja blanca)."
+            )
+
         return (
             f'Necesito una sugerencia para la sección "{section_label}" '
             f"del siguiente caso de prueba.\n\n"
@@ -301,6 +336,7 @@ class InteractiveNarrativeAssistant:
             f"{rag_block}\n\n"
             f"SECCIONES YA COMPLETADAS EN ESTA SESIÓN:\n"
             f"{context_so_far if context_so_far else '(ninguna aún)'}\n\n"
+            f"{white_box_instruction}\n"
             f'Genera ÚNICAMENTE el contenido para la sección "{section_label}".\n'
             f"{list_instruction}\n"
             f"{status_instruction}\n"

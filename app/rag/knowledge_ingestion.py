@@ -14,8 +14,8 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 _REGISTRY_PATH = Path("./data/knowledge_processed.json")
-_CHUNK_WORDS   = 400
-_CHUNK_OVERLAP = 80
+_CHUNK_WORDS   = 150   # smaller chunks keep method names + context together
+_CHUNK_OVERLAP = 30
 
 
 class KnowledgeIngestionPipeline:
@@ -127,12 +127,15 @@ class KnowledgeIngestionPipeline:
         )
         logger.info(f"Deleted {len(note_ids)} note chunk(s) from '{self._collection}'")
 
-    def ingest_all_context_reports(self) -> dict[str, int]:
+    def ingest_all_context_reports(self, force: bool = False) -> dict[str, int]:
         """
         Scan context_reports/ for .docx files not yet in the registry.
         Each chunk is prefixed with [REPORTE: <filename> - <date>] using the
         file's modification date so relative recency is visible to the LLM.
         Returns {filename: chunk_count} for newly ingested files.
+
+        Args:
+            force: If True, skip the registry check and always re-ingest every file.
         """
         context_dir = Path(settings.context_reports_dir)
         if not context_dir.exists():
@@ -144,7 +147,7 @@ class KnowledgeIngestionPipeline:
 
         for docx_path in sorted(context_dir.glob("*.docx")):
             file_hash = self._file_hash(docx_path)
-            if file_hash in registry:
+            if not force and file_hash in registry:
                 logger.debug(f"Skipping already-ingested: {docx_path.name}")
                 continue
 
@@ -159,10 +162,11 @@ class KnowledgeIngestionPipeline:
 
             chunks = self._chunk_text(text)
             all_chunks: list[dict] = []
-            for chunk in chunks:
+            for idx, chunk in enumerate(chunks):
                 dated_chunk = f"[REPORTE: {docx_path.name} - {mtime_label}]\n{chunk}"
-                chunk_id    = f"report_{hashlib.md5(dated_chunk.encode()).hexdigest()}"
-                
+                # ID = file hash prefix + chunk index → unique per file, no content collisions
+                chunk_id    = f"report_{file_hash[:16]}_{idx:04d}"
+
                 all_chunks.append({
                     "id": chunk_id,
                     "content": dated_chunk,
@@ -172,6 +176,7 @@ class KnowledgeIngestionPipeline:
                         "timestamp": mtime_iso,
                     }
                 })
+
 
             if all_chunks:
                 texts = [c["content"] for c in all_chunks]
@@ -188,6 +193,23 @@ class KnowledgeIngestionPipeline:
 
         self._save_registry(registry)
         return results
+
+    def force_reingest_file(self, docx_path: Path) -> int:
+        """
+        Remove the registry entry for a specific .docx file and re-ingest it.
+        Useful when a file was downloaded but ChromaDB never received its chunks,
+        or after manually updating the file.
+        Returns the number of new chunks stored.
+        """
+        registry  = self._load_registry()
+        file_hash = self._file_hash(docx_path)
+        removed   = registry.pop(file_hash, None)
+        if removed:
+            logger.info(f"Cleared registry entry for '{docx_path.name}' (hash: {file_hash[:8]}…)")
+        self._save_registry(registry)
+        # Now ingest normally — it will no longer be skipped
+        result = self.ingest_all_context_reports()
+        return result.get(docx_path.name, 0)
 
     # ─────────────────────────────────────────────────
     # Text extraction
