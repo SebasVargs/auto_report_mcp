@@ -176,15 +176,19 @@ class WordService:
         daily_input: DailyInput,
         report: GeneratedReport,
     ) -> None:
-        _TEST_TYPES = (ReportType.FUNCTIONAL_TESTS, ReportType.INTEGRATION_TESTS, ReportType.UNIT_TESTS)
-        if report.report_type in _TEST_TYPES and daily_input.test_cases:
+        # Normalize to string — report_type can be a ReportType enum OR already a plain str
+        rt = report.report_type.value if hasattr(report.report_type, "value") else str(report.report_type)
+
+        _TEST_TYPES = {"functional_tests", "integration_tests", "unit_tests"}
+        if rt in _TEST_TYPES and daily_input.test_cases:
             self._build_test_cases_table(
                 doc,
                 daily_input.test_cases,
-                report_type=report.report_type.value,
+                report_type=rt,
             )
-        elif report.report_type == ReportType.PROJECT_PROGRESS and daily_input.tasks:
+        elif rt == "project_progress" and daily_input.tasks:
             self._build_tasks_table(doc, daily_input.tasks)
+
 
     def _build_test_cases_table(
         self,

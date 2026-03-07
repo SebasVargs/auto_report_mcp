@@ -740,17 +740,124 @@ def action_list_reports():
                    print_warn(f"No se pudo auto-generar el resumen: {e}")
 
        if note_text:
-           with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as p:
-               p.add_task("Guardando nota en base de conocimiento…", total=None)
-               try:
-                   chunks = pipeline.ingest_text_note(note_text)
-                   p.stop()
-                   print_ok(f"Nota registrada — {chunks} chunk(s) añadidos al conocimiento del proyecto.")
-               except Exception as e:
-                   p.stop()
-                   print_err(f"Error guardando la nota: {e}")
+           console.print()
+           console.print("[dim]  Resumen generado:[/dim]")
+           console.print(Panel(f"[dim]{note_text}[/dim]", border_style="cyan", padding=(0, 2)))
+           console.print()
+           
+           approved_note = questionary.text(
+               "  Edita si es necesario y presiona Enter para guardar (vacío para cancelar):",
+               default=note_text,
+               multiline=True,
+               style=MENU_STYLE
+           ).ask()
+
+           if approved_note and approved_note.strip():
+               _save_note_with_consolidation(approved_note.strip(), pipeline)
+           else:
+               print_info("Guardado cancelado.")
        else:
            print_info("No se guardó ninguna nota.")
+
+# ─────────────────────────────────────────────────────────────────
+# TARGET DATA / HELPER
+# ─────────────────────────────────────────────────────────────────
+
+def _save_note_with_consolidation(note: str, pipeline) -> None:
+    """Helper to save a note with similarity detection and AI merging."""
+    # ── Smart consolidation: detect similar existing notes ────────────
+    similar: list[dict] = []
+    try:
+        with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as p:
+            p.add_task("Buscando notas similares en la base de conocimiento…", total=None)
+            # Use threshold 0.4 (lower is more permissive since chunks might just be conceptually similar)
+            similar = pipeline.find_similar_notes(note, threshold=0.4)
+    except Exception as e:
+        print_warn(f"No se pudo verificar similitud: {e}")
+
+    if similar:
+        console.print()
+        console.print(
+            Panel(
+                Text.from_markup(
+                    f"[bold yellow]⚠  Se encontraron {len(similar)} nota(s) relacionada(s)[/bold yellow]\n"
+                    "[dim]Puedes fusionarlas para mantener la base de conocimiento compacta y sin contradicciones.[/dim]"
+                ),
+                border_style="yellow",
+                padding=(1, 2),
+            )
+        )
+        for idx, chunk in enumerate(similar, 1):
+            score_pct = int(chunk["relevance_score"] * 100)
+            console.print(f"  [dim]Nota existente {idx}  (similitud {score_pct}%):[/dim]")
+            console.print(
+                Panel(f"[dim]{chunk['content'][:400]}[/dim]", border_style="dim", padding=(0, 2))
+            )
+
+        choices = [
+            questionary.Choice(f"Nota existente {idx} (Similitud: {int(chunk['relevance_score'] * 100)}%)", value=chunk, checked=True)
+            for idx, chunk in enumerate(similar, 1)
+        ]
+
+        selected_to_merge = questionary.checkbox(
+            "  Selecciona las notas que deseas fusionar (Espacio para (des)marcar, Enter para confirmar, ninguna para guardar como nueva):",
+            choices=choices,
+            style=MENU_STYLE,
+        ).ask()
+
+        if selected_to_merge:
+            from app.services.ai_service import AIService as _AIService
+            existing_texts = [c["content"] for c in selected_to_merge]
+
+            with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as p:
+                p.add_task("Fusionando notas con IA…", total=None)
+                try:
+                    merged_text = _AIService().merge_notes(note, existing_texts)
+                    p.stop()
+                except Exception as e:
+                    p.stop()
+                    print_err(f"Error al fusionar: {e}")
+                    merged_text = note
+
+            console.print()
+            console.print("[dim]  Resultado de la fusión:[/dim]")
+            console.print(Panel(f"[dim]{merged_text}[/dim]", border_style="green", padding=(0, 2)))
+            console.print()
+
+            approve = questionary.confirm(
+                "  ¿Aprobar y guardar la nota fusionada?",
+                default=True,
+                style=MENU_STYLE,
+            ).ask()
+
+            if approve:
+                old_ids = [c["id"] for c in selected_to_merge]
+                with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as p:
+                    p.add_task("Eliminando notas antiguas e ingresando nota consolidada…", total=None)
+                    try:
+                        pipeline.delete_notes(old_ids)
+                        chunks = pipeline.ingest_text_note(merged_text)
+                        p.stop()
+                        print_ok(
+                            f"Nota consolidada guardada ({chunks} chunk/s). "
+                            f"{len(old_ids)} nota(s) anterior(es) eliminada(s)."
+                        )
+                    except Exception as e:
+                        p.stop()
+                        print_err(f"Error al consolidar: {e}")
+            else:
+                print_info("Fusión cancelada. La nota no fue guardada.")
+            return
+
+    with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as p:
+        p.add_task("Registrando nota…", total=None)
+        try:
+            chunks = pipeline.ingest_text_note(note)
+            p.stop()
+            print_ok(f"Nota registrada en la base de conocimiento ({chunks} chunk/s).")
+        except Exception as e:
+            p.stop()
+            print_err(f"Error procesando la nota: {e}")
 
 
 
@@ -835,97 +942,7 @@ def action_feed_context():
    note = questionary.text("  Nota (Enter para saltar):", multiline=True, style=MENU_STYLE).ask()
 
    if note and note.strip():
-       # ── Smart consolidation: detect similar existing notes ────────────
-       similar: list[dict] = []
-       try:
-           with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as p:
-               p.add_task("Buscando notas similares en la base de conocimiento…", total=None)
-               similar = pipeline.find_similar_notes(note)
-       except Exception as e:
-           print_warn(f"No se pudo verificar similitud: {e}")
-
-       if similar:
-           console.print()
-           console.print(
-               Panel(
-                   Text.from_markup(
-                       f"[bold yellow]⚠  Se encontraron {len(similar)} nota(s) relacionada(s)[/bold yellow]\n"
-                       "[dim]Puedes fusionarlas para mantener la base de conocimiento compacta y sin contradicciones.[/dim]"
-                   ),
-                   border_style="yellow",
-                   padding=(1, 2),
-               )
-           )
-           for idx, chunk in enumerate(similar, 1):
-               score_pct = int(chunk["relevance_score"] * 100)
-               console.print(f"  [dim]Nota existente {idx}  (similitud {score_pct}%):[/dim]")
-               console.print(
-                   Panel(f"[dim]{chunk['content'][:400]}[/dim]", border_style="dim", padding=(0, 2))
-               )
-
-           merge_choice = questionary.select(
-               "  ¿Qué deseas hacer?",
-               choices=[
-                   questionary.Choice("  Fusionar con la(s) nota(s) similar(es)  (recomendado)", value="merge"),
-                   questionary.Choice("  Guardar como nota nueva independiente",                  value="keep"),
-               ],
-               style=MENU_STYLE,
-           ).ask()
-
-           if merge_choice == "merge":
-               from app.services.ai_service import AIService as _AIService
-               existing_texts = [c["content"] for c in similar]
-
-               with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as p:
-                   p.add_task("Fusionando notas con IA…", total=None)
-                   try:
-                       merged_text = _AIService().merge_notes(note, existing_texts)
-                       p.stop()
-                   except Exception as e:
-                       p.stop()
-                       print_err(f"Error al fusionar: {e}")
-                       merged_text = note  # fallback: save original note
-
-               console.print()
-               console.print("[dim]  Resultado de la fusión:[/dim]")
-               console.print(Panel(f"[dim]{merged_text}[/dim]", border_style="green", padding=(0, 2)))
-               console.print()
-
-               approve = questionary.confirm(
-                   "  ¿Aprobar y guardar la nota fusionada?",
-                   default=True,
-                   style=MENU_STYLE,
-               ).ask()
-
-               if approve:
-                   old_ids = [c["id"] for c in similar]
-                   with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as p:
-                       p.add_task("Eliminando notas antiguas e ingresando nota consolidada…", total=None)
-                       try:
-                           pipeline.delete_notes(old_ids)
-                           chunks = pipeline.ingest_text_note(merged_text)
-                           p.stop()
-                           print_ok(
-                               f"Nota consolidada guardada ({chunks} chunk/s). "
-                               f"{len(old_ids)} nota(s) anterior(es) eliminada(s)."
-                           )
-                       except Exception as e:
-                           p.stop()
-                           print_err(f"Error al consolidar: {e}")
-               else:
-                   print_info("Fusión cancelada. La nota no fue guardada.")
-               return   # exit — either saved merged or cancelled
-
-       # No similar notes (or user chose to keep as new) — plain ingestion
-       with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as p:
-           p.add_task("Registrando nota…", total=None)
-           try:
-               chunks = pipeline.ingest_text_note(note)
-               p.stop()
-               print_ok(f"Nota registrada en la base de conocimiento ({chunks} chunk/s).")
-           except Exception as e:
-               p.stop()
-               print_err(f"Error procesando la nota: {e}")
+       _save_note_with_consolidation(note.strip(), pipeline)
 
 # ─────────────────────────────────────────────────────────────────
 # QUERY KNOWLEDGE — with post-response options loop

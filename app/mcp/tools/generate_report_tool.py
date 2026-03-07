@@ -46,7 +46,8 @@ class GenerateReportTool:
         # Step 1: Sync from Drive if enabled and not skipped
         drive_url = ""
         if settings.drive_enabled and not request.skip_drive_sync:
-            drive_url = await self._sync_input_from_drive(target_date, request.report_type.value)
+            rt_str = request.report_type.value if hasattr(request.report_type, "value") else str(request.report_type)
+            drive_url = await self._sync_input_from_drive(target_date, rt_str)
 
         # Step 2: Load structured daily data from local disk
         daily_input = self._data_service.load_daily_input(target_date, request.report_type)

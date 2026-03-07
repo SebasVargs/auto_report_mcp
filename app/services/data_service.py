@@ -32,10 +32,12 @@ class DataService:
         path = self._resolve_path(target_date, report_type)
 
         if not path.exists():
+            rt_str = report_type.value if hasattr(report_type, "value") else str(report_type)
             raise FileNotFoundError(
-                f"No daily input found for {target_date} / {report_type.value}. "
+                f"No daily input found for {target_date} / {rt_str}. "
                 f"Expected: {path}"
             )
+
 
         raw = json.loads(path.read_text(encoding="utf-8"))
         daily_input = DailyInput.model_validate(raw)

@@ -89,7 +89,7 @@ class KnowledgeIngestionPipeline:
         )
         return len(chunks)
 
-    def find_similar_notes(self, text: str, threshold: float = 0.5) -> list[dict]:
+    def find_similar_notes(self, text: str, threshold: float = 0.4) -> list[dict]:
         """
         Embed ``text`` and search the knowledge collection for existing note
         chunks (type="note") with a relevance_score >= threshold.

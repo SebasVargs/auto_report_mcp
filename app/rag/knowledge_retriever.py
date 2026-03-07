@@ -149,6 +149,10 @@ class KnowledgeRetriever:
         boosted = []
         for frag in raw:
             score = frag.get("relevance_score", 0.0)
+            # Filter out completely irrelevant matches to prevent LLM hallucination
+            if score < 0.25:
+                continue
+                
             ftype = frag.get("metadata", {}).get("type", "context_report")
             if ftype == "note":
                 score *= _NOTE_BOOST
