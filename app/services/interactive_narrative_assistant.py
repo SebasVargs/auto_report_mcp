@@ -21,7 +21,6 @@ SECTIONS_FUNCTIONAL: list[tuple[str, str]] = [
     ("description",      "Descripción / Objetivo"),
     ("preconditions",    "Precondiciones"),
     ("steps",            "Pasos de ejecución"),
-    ("input_data",       "Datos de entrada (Caja Negra)"),
     ("expected_results", "Resultados esperados"),
     ("actual_results",   "Resultados reales"),
     ("status",           "Estado (PASS / FAIL / BLOCKED)"),
@@ -33,9 +32,7 @@ SECTIONS_INTEGRATION: list[tuple[str, str]] = [
     ("test_technique",   "Técnica de prueba (ej. partición equivalencia, valores límite)"),
     ("preconditions",    "Precondiciones"),
     ("steps",            "Pasos de ejecución"),
-    ("input_data",       "Datos de entrada (Caja Negra)"),
     ("covered_method",   "Método / Endpoint integrado (Caja Blanca)"),
-    ("coverage_type",    "Tipo de cobertura (rama / sentencia / condición)"),
     ("expected_results", "Resultados esperados"),
     ("actual_results",   "Resultados reales"),
     ("status",           "Estado (PASS / FAIL / BLOCKED)"),
@@ -45,10 +42,6 @@ SECTIONS_INTEGRATION: list[tuple[str, str]] = [
 SECTIONS_UNIT: list[tuple[str, str]] = [
     ("description",      "Descripción / Objetivo"),
     ("covered_class",    "Clase / Módulo bajo prueba"),
-    ("covered_method",   "Método / Función bajo prueba"),
-    ("test_framework",   "Framework de prueba (pytest, JUnit, Mocha…)"),
-    ("coverage_type",    "Tipo de cobertura (rama / sentencia / condición / camino)"),
-    ("coverage_pct",     "Porcentaje de cobertura logrado (%)"),
     ("preconditions",    "Precondiciones / Setup"),
     ("steps",            "Pasos de ejecución"),
     ("expected_results", "Resultado esperado"),
@@ -68,9 +61,9 @@ def get_sections_for_type(report_type: str) -> list[tuple[str, str]]:
     return SECTIONS_FUNCTIONAL
 
 # Fields that accept a list (bullet / numbered) rather than plain text
-LIST_SECTIONS = {"preconditions", "steps", "expected_results", "actual_results", "input_data"}
+LIST_SECTIONS = {"preconditions", "steps", "expected_results", "actual_results"}
 # Fields that are numeric (we ask for a number, not free text)
-NUMERIC_SECTIONS = {"coverage_pct"}
+NUMERIC_SECTIONS = set()
 # Status is a fixed-choice field
 STATUS_SECTIONS = {"status"}
 
@@ -84,14 +77,13 @@ REGLAS GENERALES:
 - Ten en cuenta las secciones ya completadas en esta sesión para mantener coherencia.
 - IMPORTANTE: Adapta estrictamente tu sugerencia a la información que el usuario ya ha ingresado en "SECCIONES YA COMPLETADAS".
 - Genera texto concreto, no genérico. Usa nombres de campos, módulos o funcionalidades reales cuando estén disponibles.
-- Para listas (preconditions, steps, expected_results, actual_results, input_data): devuelve cada ítem en una línea separada con " - " al inicio.
+- Para listas (preconditions, steps, expected_results, actual_results): devuelve cada ítem en una línea separada con " - " al inicio.
 - Para "status": devuelve únicamente PASS, FAIL o BLOCKED.
 - Para "description": devuelve un párrafo de 2-3 oraciones.
 - NUNCA uses frases vacías como "Se realizó la prueba" o "Resultado correcto".
 
 REGLAS PRUEBAS FUNCIONALES (Caja Negra):
 - Enfócate en comportamiento externo observable, sin mencionar implementación interna.
-- Para "input_data": especifica valores exactos de entrada (ej. usuario="admin@qa.com", contraseña="Test@123").
 - Para "test_technique": sugiere partición equivalencia, valores límite, tabla de decisión o prueba de transición de estado.
 
 REGLAS PRUEBAS DE INTEGRACIÓN (Caja Negra + Caja Blanca) — proporción 50/50:
@@ -99,14 +91,10 @@ REGLAS PRUEBAS DE INTEGRACIÓN (Caja Negra + Caja Blanca) — proporción 50/50:
 - Para "description": el primer párrafo describe el flujo de integración (qué módulos interactúan, qué datos fluyen entre ellos). El segundo menciona los métodos o endpoints específicos que participan si el contexto los incluye.
 - Para "steps": mezcla pasos de usuario (acciones externas observables) con comentarios del método interno invocado. Ejemplo: "2. El sistema llama a ActivityService.create() con los datos validados".
 - Para "covered_method": indica el endpoint o método exacto (ej. POST /api/activities, ActivityService.createActivity()). Usa los nombres del contexto si están disponibles.
-- Para "coverage_type": branch, statement, condition o path según corresponda.
 
 REGLAS PRUEBAS UNITARIAS (Caja Blanca):
 - Enfócate exclusivamente en la lógica interna del método/función.
 - Para "covered_class": usa notación de paquete/clase (ej. app.services.UserService).
-- Para "covered_method": usa firma del método (ej. validate_email(email: str) -> bool).
-- Para "coverage_pct": devuelve solo el número (ej. 87.5).
-- Para "test_framework": indica el framework exacto con versión si es conocida.
 """
 
 
@@ -165,14 +153,7 @@ class TestCaseDraft:
             parts.append(f"Técnica: {self.test_technique}")
         if self.covered_class:
             parts.append(f"Clase: {self.covered_class}")
-        if self.covered_method:
-            parts.append(f"Método: {self.covered_method}")
-        if self.test_framework:
-            parts.append(f"Framework: {self.test_framework}")
-        if self.coverage_type:
-            parts.append(f"Tipo cobertura: {self.coverage_type}")
-        if self.input_data:
-            parts.append("Datos de entrada:\n" + "\n".join(f"  - {d}" for d in self.input_data))
+
         if self.preconditions:
             parts.append("Precondiciones:\n" + "\n".join(f"  - {p}" for p in self.preconditions))
         if self.steps:
@@ -225,15 +206,13 @@ class InteractiveNarrativeAssistant:
         rag_query   = " ".join(query_parts)[:500] + f" {section_key}"
 
         # For white-box specific fields, steer the query toward code documentation
-        WHITE_BOX_FIELDS = {"covered_method", "covered_class", "coverage_type", "test_framework"}
+        WHITE_BOX_FIELDS = {"covered_class"}
         if section_key in WHITE_BOX_FIELDS:
-            # Use module name + code-doc keywords to retrieve method/class info from context
-            code_query = f"{draft.module} método clase implementación función código {section_key}"
-            rag_query  = code_query[:500]
+            # Append code-doc keywords to the query so the context isn't lost
+            rag_query = f"{rag_query} {draft.module} método clase implementación código"[:500]
         elif report_type == "integration_tests" and section_key in ("description", "steps"):
-            # For integration: blend flow terms + code-doc terms so the LLM gets both perspectives
-            code_query = f"{draft.module} flujo integración proceso {section_key} método función implementación"
-            rag_query  = code_query[:500]
+            # Append flow and code terms
+            rag_query = f"{rag_query} {draft.module} flujo integración proceso método"[:500]
 
         rag_context = self._retriever.retrieve_for_suggestion(rag_query, top_k=8)
 
@@ -307,7 +286,7 @@ class InteractiveNarrativeAssistant:
         type_label = type_label_map.get(report_type, report_type)
 
         white_box_instruction = ""
-        if section_key in {"covered_method", "covered_class"}:
+        if section_key in {"covered_class"}:
             white_box_instruction = (
                 "⚠️ IMPORTANTE: Si el contexto del historial contiene nombres de métodos, clases o "
                 "funciones reales, ÚSA LOS directamente en tu sugerencia. No inventes nombres genéricos. "
@@ -317,8 +296,8 @@ class InteractiveNarrativeAssistant:
             white_box_instruction = (
                 "⚖️ BALANCE: Combina pasos desde la perspectiva del usuario (caja negra) con "
                 "los métodos internos invocados (caja blanca). Mezcla ambos en la misma lista. "
-                "Ejemplo: '3. El backend invoca ActivityService.create() con los datos del formulario'. "
-                "Si el contexto contiene nombres de métodos reales, úsalos."
+                "IMPORTANTE: Usa los nombres de métodos EXACTOS si aparecen en el historial provisto. "
+                "Si no aparecen en el contexto, concéntrate solo en los pasos de usuario sin inventar métodos internos."
             )
         elif report_type == "integration_tests" and section_key == "description":
             white_box_instruction = (

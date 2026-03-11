@@ -145,6 +145,19 @@ class KnowledgeIngestionPipeline:
         registry = self._load_registry()
         results: dict[str, int] = {}
 
+        # 1. Purge from DB and registry any files that were deleted from disk
+        local_files = {p.name for p in context_dir.glob("*.docx")}
+        missing = [(h, fn) for h, fn in registry.items() if fn not in local_files]
+        for file_hash, fname in missing:
+            self._vs.delete_by_metadata(
+                collection_name=self._collection,
+                where={"source": fname}
+            )
+            del registry[file_hash]
+            logger.info(f"🗑️  Purged chunks for deleted report: {fname}")
+
+        # 2. Ingest valid files
+
         for docx_path in sorted(context_dir.glob("*.docx")):
             file_hash = self._file_hash(docx_path)
             if not force and file_hash in registry:

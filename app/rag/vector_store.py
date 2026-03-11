@@ -83,6 +83,16 @@ class VectorStore:
         collection.delete(ids=ids)
         logger.debug(f"Deleted {len(ids)} chunk(s) from '{collection_name}'")
 
+    def delete_by_metadata(self, collection_name: str, where: dict) -> None:
+        """
+        Delete specific chunks from a collection by matching metadata.
+        """
+        if not where:
+            return
+        collection = self.get_or_create_collection(collection_name)
+        collection.delete(where=where)
+        logger.debug(f"Deleted chunks by metadata '{where}' from '{collection_name}'")
+
     # ─────────────────────────────────────────────────
     # Read operations
     # ─────────────────────────────────────────────────

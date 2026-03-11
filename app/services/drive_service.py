@@ -62,7 +62,8 @@ class DriveService:
                 token.write(creds.to_json())
 
         self._service = build("drive", "v3", credentials=creds, cache_discovery=False)
-        logger.info("DriveService initialized — connected via OAuth2 (User Account)")
+        # Moved to DEBUG — the CLI shows its own "connected" indicator
+        logger.debug("DriveService initialized — connected via OAuth2 (User Account)")
 
     # ─────────────────────────────────────────────────
     # Download helpers
@@ -92,10 +93,11 @@ class DriveService:
                 continue
             self._download_file(f["id"], local_path)
             downloaded.append(local_path)
-            logger.info(f"⬇️  Downloaded from Drive: {f['name']}")
+            logger.debug(f"⬇️  Downloaded from Drive: {f['name']}")  # debug → no terminal noise
 
+        # Single summary line at INFO level
         logger.info(
-            f"sync_raw_reports: {len(downloaded)} new files, "
+            f"sync_raw_reports: {len(downloaded)} new file(s), "
             f"{len(files) - len(downloaded)} already local"
         )
         return downloaded
@@ -126,7 +128,6 @@ class DriveService:
         downloaded: list[Path] = []
 
         for f in files:
-            # Google Docs exported as .docx get a .docx suffix appended if missing
             name       = f["name"]
             mime       = f.get("mimeType", "")
             local_name = name if name.endswith(".docx") else f"{name}.docx"
@@ -138,10 +139,20 @@ class DriveService:
 
             self._download_file(f["id"], local_path, mime_type=mime)
             downloaded.append(local_path)
-            logger.info(f"⬇️  Downloaded context report: {local_name}")
+            logger.debug(f"⬇️  Downloaded context report: {local_name}")  # debug only
 
-        if downloaded:
-            logger.info(f"sync_context_reports: {len(downloaded)} new file(s) downloaded.")
+        # Build list of valid drive names for cleanup
+        drive_names_set = {f["name"] if f["name"].endswith(".docx") else f"{f['name']}.docx" for f in files}
+        deleted_count = 0
+        for local_file in target.glob("*.docx"):
+            if local_file.name not in drive_names_set:
+                local_file.unlink(missing_ok=True)
+                deleted_count += 1
+                logger.info(f"🗑️  Deleted local context report (not in Drive): {local_file.name}")
+
+        # Single summary at INFO
+        if downloaded or deleted_count > 0:
+            logger.info(f"sync_context_reports: {len(downloaded)} new downloaded, {deleted_count} deleted locally.")
         return downloaded
 
     def download_daily_input(
@@ -171,12 +182,63 @@ class DriveService:
             )
 
         self._download_file(files[0]["id"], local_path)
-        logger.info(f"⬇️  Downloaded daily input from Drive: {filename}")
+        logger.debug(f"⬇️  Downloaded daily input from Drive: {filename}")
         return local_path
 
     # ─────────────────────────────────────────────────
     # Upload helpers
     # ─────────────────────────────────────────────────
+
+    def upload_context_report(self, local_path: Path) -> str:
+        """
+        Upload a local .docx file to the context_reports Drive folder.
+        Returns the Drive file URL.
+        """
+        folder_id = getattr(self._settings, "drive_context_reports_folder_id", "")
+        if not folder_id:
+            logger.warning("No drive_context_reports_folder_id configured.")
+            return ""
+
+        existing  = self._list_files(folder_id)
+        existing_id = next(
+            (f["id"] for f in existing if f["name"] == local_path.name), None
+        )
+
+        from googleapiclient.http import MediaFileUpload
+        media = MediaFileUpload(
+            str(local_path),
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            resumable=True,
+        )
+
+        if existing_id:
+            result = (
+                self._service.files()
+                .update(
+                    fileId=existing_id,
+                    media_body=media,
+                    fields="id,webViewLink",
+                    supportsAllDrives=True,
+                )
+                .execute()
+            )
+        else:
+            file_metadata = {"name": local_path.name, "parents": [folder_id]}
+            result = (
+                self._service.files()
+                .create(
+                    body=file_metadata,
+                    media_body=media,
+                    fields="id,webViewLink",
+                    supportsAllDrives=True,
+                )
+                .execute()
+            )
+
+        url = result.get("webViewLink", "")
+        logger.info(f"⬆️  Uploaded context to Drive: {local_path.name} → {url}")
+        return url
+
 
     def upload_report(self, local_path: Path) -> str:
         """
@@ -286,9 +348,37 @@ class DriveService:
             local_path = target / f["name"]
             self._download_file(f["id"], local_path)
             mapping[local_path] = f["id"]
-            logger.info(f"⬇️  Downloaded image from Drive: {f['name']}")
+            logger.debug(f"⬇️  Downloaded image from Drive: {f['name']}")  # debug only
 
+        # Single summary at INFO
+        if mapping:
+            logger.info(f"sync_input_images: {len(mapping)} image(s) downloaded.")
         return mapping
+
+    def list_input_images(self) -> list[dict]:
+        """
+        Return the list of image file metadata dicts waiting in the
+        input_images Drive folder, without downloading them.
+        Used by the CLI to show a progress bar with a known total.
+        """
+        folder_id = self._settings.drive_input_images_folder_id
+        if not folder_id:
+            return []
+        files = self._list_files(folder_id, mime_filter="")
+        return [f for f in files if f.get("mimeType", "").startswith("image/")]
+
+    def download_input_image(self, file_meta: dict, local_dir: Optional[Path] = None) -> Path:
+        """
+        Download a single image file given its Drive metadata dict
+        (as returned by list_input_images / _list_files).
+        Returns the local Path where the file was saved.
+        """
+        target = local_dir or Path(self._settings.input_images_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        local_path = target / file_meta["name"]
+        self._download_file(file_meta["id"], local_path)
+        logger.debug(f"⬇️  Downloaded image: {file_meta['name']}")
+        return local_path
 
     def move_file(self, file_id: str, new_parent_id: str) -> None:
         """Move a file in Google Drive to a new folder."""
@@ -307,7 +397,7 @@ class DriveService:
             fields="id, parents",
             supportsAllDrives=True,
         ).execute()
-        logger.info(f"🚚 Moved Drive file {file_id} to folder {new_parent_id}")
+        logger.debug(f"🚚 Moved Drive file {file_id} to folder {new_parent_id}")
 
     def move_input_images_to_repo(self) -> int:
         """Moves all image files from the input_images folder to repository_images in Drive."""
@@ -355,21 +445,17 @@ class DriveService:
             stage_dir = Path(tmp) / backup_name
             stage_dir.mkdir()
 
-            # Copy vector_db/
             vector_db = Path(self._settings.chroma_persist_dir)
             if vector_db.exists():
                 shutil.copytree(str(vector_db), str(stage_dir / "vector_db"))
 
-            # Copy knowledge registry JSON
             registry = Path("./data/knowledge_processed.json")
             if registry.exists():
                 shutil.copy2(str(registry), str(stage_dir / "knowledge_processed.json"))
 
-            # Zip everything
             zip_base = Path(tmp) / backup_name
             zip_path = Path(shutil.make_archive(str(zip_base), "zip", tmp, backup_name))
 
-            # Upload to Drive
             media = MediaFileUpload(
                 str(zip_path),
                 mimetype="application/zip",
@@ -391,7 +477,7 @@ class DriveService:
             )
 
         url = result.get("webViewLink", "")
-        logger.info(f"☁️  Knowledge backup uploaded: {zip_path.name} → {url}")
+        logger.info(f"☁️  Knowledge backup uploaded: {backup_name}.zip → {url}")
         return url
 
     def list_knowledge_backups(self) -> list[dict]:
@@ -424,13 +510,11 @@ class DriveService:
             with zipfile.ZipFile(zip_path, "r") as zf:
                 zf.extractall(tmp)
 
-            # The zip contains a folder named like "knowledge_backup_YYYYMMDD_HHMMSS"
             extracted_dirs = [d for d in Path(tmp).iterdir() if d.is_dir()]
             if not extracted_dirs:
                 raise FileNotFoundError("El archivo de backup está vacío o tiene un formato inesperado.")
             source = extracted_dirs[0]
 
-            # Restore vector_db
             src_vdb = source / "vector_db"
             dst_vdb = Path(self._settings.chroma_persist_dir)
             if src_vdb.exists():
@@ -439,7 +523,6 @@ class DriveService:
                 shutil.copytree(str(src_vdb), str(dst_vdb))
                 logger.info(f"✅ vector_db/ restored from {file_name}")
 
-            # Restore registry
             src_reg = source / "knowledge_processed.json"
             dst_reg = Path("./data/knowledge_processed.json")
             if src_reg.exists():

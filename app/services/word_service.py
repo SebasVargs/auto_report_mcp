@@ -33,11 +33,19 @@ PASS_COLOR = "70AD47"
 FAIL_COLOR = "C00000"
 WARN_COLOR = "FF8C00"
 
+# ─── Column widths (must sum to usable page width) ────────────
+# A4 (21 cm) − left margin (3.0 cm) − right margin (2.5 cm) = 15.5 cm
+TABLE_TOTAL_W = Cm(15.5)
+COL_W = [Cm(3.0), Cm(6.5), Cm(2.5), Cm(3.5)]   # sum = 15.5 cm
+
+# ─── Content style (for table data cells) ─────────────────────
+CONTENT_FONT_SIZE = Pt(10)
+CONTENT_ITALIC = False
+
 
 class WordService:
     """
     Builds the complete .docx from a GeneratedReport domain object.
-    Uses Template Method: _build_cover → _build_toc → _build_body → _build_appendix
     """
 
     def __init__(self):
@@ -56,12 +64,10 @@ class WordService:
         self._configure_document(doc)
 
         self._build_cover(doc, report, daily_input)
+        self._build_toc(doc)
         self._add_page_break(doc)
         self._build_body_sections(doc, report)
         self._build_data_tables(doc, daily_input, report)
-        self._add_page_break(doc)
-        self._build_conclusions(doc, report)
-        self._build_next_steps(doc, report)
 
         output_path = self._compute_output_path(report)
         doc.save(str(output_path))
@@ -95,15 +101,12 @@ class WordService:
         p.runs[0].font.color.rgb = RGBColor(0x80, 0x80, 0x80)
 
     # ─────────────────────────────────────────────────
-    # Cover page
+    # Cover page  (metadata table removed)
     # ─────────────────────────────────────────────────
 
     def _build_cover(
         self, doc: Document, report: GeneratedReport, daily_input: DailyInput
     ) -> None:
-        # Spacer
-        for _ in range(6):
-            doc.add_paragraph()
 
         # Report type label
         type_label = {
@@ -117,42 +120,81 @@ class WordService:
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = p.add_run(type_label)
         run.bold = True
-        run.font.size = Pt(22)
-        run.font.color.rgb = PRIMARY
+        run.font.size = Pt(14)
+        run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
 
         # Project name
         p2 = doc.add_paragraph()
         p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        r2 = p2.add_run(report.project_name.upper())
-        r2.bold = True
-        r2.font.size = Pt(16)
-        r2.font.color.rgb = SECONDARY
+        r2 = p2.add_run(report.project_name)
+        r2.italic = True
+        r2.font.size = Pt(12)
+        r2.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
+        p2.paragraph_format.space_after = Pt(24)
 
-        # Version
-        if daily_input.project_version:
-            pv = doc.add_paragraph()
-            pv.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            pv.add_run(f"Versión {daily_input.project_version}").font.size = Pt(12)
+    # ─────────────────────────────────────────────────
+    # Table of Contents
+    # ─────────────────────────────────────────────────
 
-        for _ in range(4):
-            doc.add_paragraph()
+    def _build_toc(self, doc: Document) -> None:
+        """
+        Insert a Word TOC field (updates when the user opens the file and
+        accepts the prompt to update fields, or presses Ctrl+A → F9).
+        Picks up Heading 2 entries (outlineLevel 1) which are the hidden
+        white-text headings placed before each test-case table.
+        """
+        # TOC title (hidden or removed, since the screenshot doesn't show "Contenido" explicitly, it just shows the table)
+        # But we must leave a small spacing if needed, we will just omit the large "Contenido"
+        pass
 
-        # Metadata table
-        meta = [
-            ("Fecha:", str(report.report_date)),
-            ("Ambiente:", report.environment),
-            ("Preparado por:", daily_input.prepared_by),
-            ("Generado:", str(report.generated_at.strftime("%Y-%m-%d %H:%M UTC"))),
-        ]
-        tbl = doc.add_table(rows=len(meta), cols=2)
-        tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
-        tbl.style = "Table Grid"
-        for i, (label, value) in enumerate(meta):
-            tbl.rows[i].cells[0].text = label
-            tbl.rows[i].cells[1].text = value
-            tbl.rows[i].cells[0].paragraphs[0].runs[0].bold = True
-            tbl.rows[i].cells[0].width = Cm(5)
-            tbl.rows[i].cells[1].width = Cm(8)
+        # TOC field  (\o "2-2" = only Heading 2; \h = hyperlinks; \z = hide tabs in web; \u = use applied outline levels)
+        p = doc.add_paragraph()
+        run = p.add_run()
+
+        fldChar_begin = OxmlElement('w:fldChar')
+        fldChar_begin.set(qn('w:fldCharType'), 'begin')
+        run._r.append(fldChar_begin)
+
+        instrText = OxmlElement('w:instrText')
+        instrText.set(qn('xml:space'), 'preserve')
+        instrText.text = ' TOC \\o "2-2" \\h \\z \\u '
+        run._r.append(instrText)
+
+        fldChar_sep = OxmlElement('w:fldChar')
+        fldChar_sep.set(qn('w:fldCharType'), 'separate')
+        run._r.append(fldChar_sep)
+
+        # Placeholder text (replaced when Word updates the field)
+        p_placeholder = doc.add_paragraph()
+        p_placeholder.add_run(
+            "[Haga clic con el botón derecho aquí y seleccione 'Actualizar campo' para generar el contenido]"
+        ).font.color.rgb = RGBColor(0x80, 0x80, 0x80)
+
+        run2 = p.add_run()
+        fldChar_end = OxmlElement('w:fldChar')
+        fldChar_end.set(qn('w:fldCharType'), 'end')
+        run2._r.append(fldChar_end)
+
+    # ─────────────────────────────────────────────────
+    # Hidden heading before each test-case table
+    # ─────────────────────────────────────────────────
+
+    def _add_hidden_heading(self, doc: Document, text: str) -> None:
+        """
+        Adds a Heading 2 paragraph that feeds the TOC. 
+        Instead of hidden, it's now visually styled as 9pt black italic.
+        """
+        p = doc.add_paragraph(style='Heading 2')
+        # Remove any existing runs added by the style
+        for run in p.runs:
+            run.text = ""
+        run = p.add_run(text)
+        run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
+        run.font.size = Pt(9)
+        run.font.italic = True
+        run.font.name = 'Century Gothic'
+        p.paragraph_format.space_before = Pt(6)
+        p.paragraph_format.space_after = Pt(2)
 
     # ─────────────────────────────────────────────────
     # Body sections
@@ -176,7 +218,6 @@ class WordService:
         daily_input: DailyInput,
         report: GeneratedReport,
     ) -> None:
-        # Normalize to string — report_type can be a ReportType enum OR already a plain str
         rt = report.report_type.value if hasattr(report.report_type, "value") else str(report.report_type)
 
         _TEST_TYPES = {"functional_tests", "integration_tests", "unit_tests"}
@@ -189,7 +230,6 @@ class WordService:
         elif rt == "project_progress" and daily_input.tasks:
             self._build_tasks_table(doc, daily_input.tasks)
 
-
     def _build_test_cases_table(
         self,
         doc: Document,
@@ -198,35 +238,39 @@ class WordService:
     ) -> None:
         """
         Unified test-case table builder for all 3 report types.
-        All types share the same 9-row base format.
-        Integration tests get 3 extra rows (technique, method/endpoint, coverage).
-        Unit tests get 2 extra rows (class/method, framework/coverage).
+        Each table is preceded by a hidden Heading 2 (white text, 1pt) that
+        feeds the TOC. Cell content uses Century Gothic 9pt italic.
         """
         HEADER_COLOR = "E2EFDA"
-        COL_W = [Cm(3.5), Cm(7.0), Cm(1.5), Cm(3.5)]
 
         heading_map = {
             "functional_tests":  "PRUEBA(S) FUNCIONAL(ES)",
             "integration_tests": "PRUEBA(S) DE INTEGRACIÓN",
             "unit_tests":        "PRUEBA(S) UNITARIA(S)",
         }
-        doc.add_heading(heading_map.get(report_type, "PRUEBA(S)"), level=2)
+        doc.add_heading(heading_map.get(report_type, "PRUEBA(S)"), level=1)
 
         extra_rows = {
-            "integration_tests": 3,
-            "unit_tests": 2,
+            "integration_tests": 1,
+            "unit_tests": 1,
         }.get(report_type, 0)
         total_rows = 9 + extra_rows
 
-        for tc in test_cases:
+        for i, tc in enumerate(test_cases, 1):
+            # ── Hidden heading for TOC ─────────────────────────────────────
+            toc_label = f"{i}. {tc.description}" if tc.description else f"{i}. Prueba {tc.test_id}"
+            self._add_hidden_heading(doc, toc_label)
+
             tbl = doc.add_table(rows=total_rows, cols=4)
-            tbl.style  = "Table Grid"
+            tbl.style   = "Table Grid"
             tbl.autofit = False
+
+            self._lock_table_width(tbl, TABLE_TOTAL_W)
             for row in tbl.rows:
                 for ci, w in enumerate(COL_W):
-                    row.cells[ci].width = w
+                    self._set_cell_width(row.cells[ci], w)
 
-            # ── R1: Header (full-width) ───────────────────────
+            # ── R1: Header (full-width merge) ──────────────────────────────
             r1 = tbl.rows[0]
             c1 = r1.cells[0]
             c1.merge(r1.cells[3])
@@ -241,7 +285,7 @@ class WordService:
             p1.runs[0].bold = True
             p1.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-            # ── R2: Módulo / Número de prueba ─────────────────
+            # ── R2: Módulo | Número de prueba ──────────────────────────────
             r2 = tbl.rows[1]
             c2_0 = r2.cells[0]
             c2_0.text = "Módulo"
@@ -249,6 +293,7 @@ class WordService:
             self._shade_cell(c2_0, "F2F2F2")
             self._vcenter(c2_0)
             r2.cells[1].text = tc.module
+            self._apply_content_font(r2.cells[1])
             self._vcenter(r2.cells[1])
             c2_2 = r2.cells[2]
             c2_2.merge(r2.cells[3])
@@ -257,7 +302,7 @@ class WordService:
             self._shade_cell(c2_2, "F2F2F2")
             self._vcenter(c2_2)
 
-            # ── R3: Descripción ───────────────────────────────
+            # ── R3: Descripción ────────────────────────────────────────────
             r3 = tbl.rows[2]
             c3_0 = r3.cells[0]
             c3_0.text = "Descripción"
@@ -267,8 +312,9 @@ class WordService:
             c3_1 = r3.cells[1]
             c3_1.merge(r3.cells[3])
             c3_1.text = tc.description
+            self._apply_content_font(c3_1)
 
-            # ── R4: Preparada por ───────────────────────────
+            # ── R4: Preparada por | Fecha ──────────────────────────────────
             r4 = tbl.rows[3]
             c4_0 = r4.cells[0]
             c4_0.text = "Preparada por"
@@ -276,6 +322,7 @@ class WordService:
             self._shade_cell(c4_0, "F2F2F2")
             self._vcenter(c4_0)
             r4.cells[1].text = tc.prepared_by or "—"
+            self._apply_content_font(r4.cells[1])
             self._vcenter(r4.cells[1])
             c4_2 = r4.cells[2]
             c4_2.text = "Fecha:"
@@ -283,9 +330,10 @@ class WordService:
             self._shade_cell(c4_2, "F2F2F2")
             self._vcenter(c4_2)
             r4.cells[3].text = tc.prepare_date or "—"
+            self._apply_content_font(r4.cells[3])
             self._vcenter(r4.cells[3])
 
-            # ── R5: Probada por ─────────────────────────────
+            # ── R5: Probada por | Fecha ────────────────────────────────────
             r5 = tbl.rows[4]
             c5_0 = r5.cells[0]
             c5_0.text = "Probada por"
@@ -293,6 +341,7 @@ class WordService:
             self._shade_cell(c5_0, "F2F2F2")
             self._vcenter(c5_0)
             r5.cells[1].text = tc.tested_by or "—"
+            self._apply_content_font(r5.cells[1])
             self._vcenter(r5.cells[1])
             c5_2 = r5.cells[2]
             c5_2.text = "Fecha:"
@@ -300,13 +349,13 @@ class WordService:
             self._shade_cell(c5_2, "F2F2F2")
             self._vcenter(c5_2)
             r5.cells[3].text = tc.test_date or "—"
+            self._apply_content_font(r5.cells[3])
             self._vcenter(r5.cells[3])
 
-            # ── Extra rows: type-specific metadata ───────────────
+            # ── Extra rows: type-specific metadata ────────────────────────
             next_row = 5
 
             if report_type == "integration_tests":
-                # Técnica de Caja Negra
                 rx = tbl.rows[next_row]
                 c_lbl = rx.cells[0]
                 c_lbl.text = "Técnica (Caja Negra)"
@@ -316,82 +365,36 @@ class WordService:
                 c_val = rx.cells[1]
                 c_val.merge(rx.cells[3])
                 c_val.text = tc.test_technique or "Partición de equivalencia"
-                next_row += 1
-                # Método / Endpoint (Caja Blanca)
-                rx = tbl.rows[next_row]
-                c_lbl = rx.cells[0]
-                c_lbl.text = "Método/Endpoint (Caja Blanca)"
-                c_lbl.paragraphs[0].runs[0].bold = True
-                self._shade_cell(c_lbl, "F2F2F2")
-                self._vcenter(c_lbl)
-                c_val = rx.cells[1]
-                c_val.merge(rx.cells[3])
-                c_val.text = tc.covered_method or "—"
-                next_row += 1
-                # Cobertura
-                rx = tbl.rows[next_row]
-                c_lbl = rx.cells[0]
-                c_lbl.text = "Cobertura"
-                c_lbl.paragraphs[0].runs[0].bold = True
-                self._shade_cell(c_lbl, "F2F2F2")
-                self._vcenter(c_lbl)
-                rx.cells[1].text = tc.coverage_type or "—"
-                c_lbl2 = rx.cells[2]
-                c_lbl2.text = "% Cobertura"
-                c_lbl2.paragraphs[0].runs[0].bold = True
-                self._shade_cell(c_lbl2, "F2F2F2")
-                self._vcenter(c_lbl2)
-                rx.cells[3].text = f"{tc.coverage_pct:.1f}%" if tc.coverage_pct else "—"
+                self._apply_content_font(c_val)
                 next_row += 1
 
             elif report_type == "unit_tests":
-                # Clase / Método
                 rx = tbl.rows[next_row]
                 c_lbl = rx.cells[0]
                 c_lbl.text = "Clase / Módulo"
                 c_lbl.paragraphs[0].runs[0].bold = True
                 self._shade_cell(c_lbl, "F2F2F2")
                 self._vcenter(c_lbl)
-                rx.cells[1].text = tc.covered_class or "—"
-                c_lbl2 = rx.cells[2]
-                c_lbl2.text = "Método / Función"
-                c_lbl2.paragraphs[0].runs[0].bold = True
-                self._shade_cell(c_lbl2, "F2F2F2")
-                self._vcenter(c_lbl2)
-                rx.cells[3].text = tc.covered_method or "—"
-                next_row += 1
-                # Framework / Cobertura
-                rx = tbl.rows[next_row]
-                c_lbl = rx.cells[0]
-                c_lbl.text = "Framework"
-                c_lbl.paragraphs[0].runs[0].bold = True
-                self._shade_cell(c_lbl, "F2F2F2")
-                self._vcenter(c_lbl)
-                rx.cells[1].text = tc.test_framework or "—"
-                c_lbl2 = rx.cells[2]
-                c_lbl2.text = "% Cobertura"
-                c_lbl2.paragraphs[0].runs[0].bold = True
-                self._shade_cell(c_lbl2, "F2F2F2")
-                self._vcenter(c_lbl2)
-                rx.cells[3].text = f"{tc.coverage_pct:.1f}%" if tc.coverage_pct else "—"
+                c_val = rx.cells[1]
+                c_val.merge(rx.cells[3])
+                c_val.text = tc.covered_class or "—"
+                self._apply_content_font(c_val)
                 next_row += 1
 
-            # ── Condiciones de ejecución (full-width) ─────────────
+            # ── Condiciones de ejecución ──────────────────────────────────
             r6 = tbl.rows[next_row]
             c6 = r6.cells[0]
             c6.merge(r6.cells[3])
             p6_title = c6.paragraphs[0]
             p6_title.clear()
             p6_title.add_run("Condiciones de ejecución").bold = True
-            cond_items = list(tc.preconditions or [])
-            if tc.input_data:
-                cond_items = list(tc.input_data) + cond_items
-            for pc in (cond_items or ["—"]):
+            for pc in (list(tc.preconditions or []) or ["—"]):
                 pb = c6.add_paragraph(pc, style="List Bullet")
                 pb.paragraph_format.space_after = Pt(2)
+                self._apply_content_font_paragraph(pb)
             next_row += 1
 
-            # ── Pasos de ejecución ────────────────────────────
+            # ── Pasos de ejecución ────────────────────────────────────────
             r7 = tbl.rows[next_row]
             c7_0 = r7.cells[0]
             c7_0.text = "Pasos de\nejecución"
@@ -402,12 +405,13 @@ class WordService:
             for step in (tc.steps or ["—"]):
                 p7 = c7_1.add_paragraph(step, style="List Number")
                 p7.paragraph_format.space_after = Pt(2)
+                self._apply_content_font_paragraph(p7)
             first_p = c7_1.paragraphs[0]
             if not first_p.text and len(c7_1.paragraphs) > 1:
                 first_p._element.getparent().remove(first_p._element)
             next_row += 1
 
-            # ── Resultados esperados ──────────────────────────
+            # ── Resultados esperados ──────────────────────────────────────
             r8 = tbl.rows[next_row]
             c8 = r8.cells[0]
             c8.merge(r8.cells[3])
@@ -417,9 +421,10 @@ class WordService:
             for exp in (tc.expected_results or ["—"]):
                 pe = c8.add_paragraph(exp, style="List Bullet")
                 pe.paragraph_format.space_after = Pt(2)
+                self._apply_content_font_paragraph(pe)
             next_row += 1
 
-            # ── Resultados obtenidos ──────────────────────────
+            # ── Resultados obtenidos ──────────────────────────────────────
             r9 = tbl.rows[next_row]
             c9 = r9.cells[0]
             c9.merge(r9.cells[3])
@@ -433,11 +438,17 @@ class WordService:
             for act in (tc.actual_results or ["—"]):
                 pa = c9.add_paragraph(act, style="List Bullet")
                 pa.paragraph_format.space_after = Pt(2)
+                self._apply_content_font_paragraph(pa)
 
             p_final = c9.add_paragraph(style="List Bullet")
             p_final.paragraph_format.space_after = Pt(2)
-            p_final.add_run("Resultado de la prueba: ").bold = True
-            p_final.add_run(local_status)
+            run_label = p_final.add_run("Resultado de la prueba: ")
+            run_label.bold = True
+            run_label.font.size = CONTENT_FONT_SIZE
+            run_label.font.italic = CONTENT_ITALIC
+            run_result = p_final.add_run(local_status)
+            run_result.font.size = CONTENT_FONT_SIZE
+            run_result.font.italic = CONTENT_ITALIC
 
             # Evidence image
             if tc.evidence_image_filename:
@@ -452,10 +463,31 @@ class WordService:
 
             doc.add_paragraph()
 
+    # ─────────────────────────────────────────────────
+    # Content font helpers  (9 pt, italic, Century Gothic)
+    # ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _apply_content_font(cell) -> None:
+        """Apply 9pt italic to all existing runs in all paragraphs of a cell."""
+        for para in cell.paragraphs:
+            WordService._apply_content_font_paragraph(para)
+
+    @staticmethod
+    def _apply_content_font_paragraph(para) -> None:
+        """Apply 9pt italic to every run in a paragraph."""
+        for run in para.runs:
+            if not run.bold:  # leave bold label runs untouched
+                run.font.size = CONTENT_FONT_SIZE
+                run.font.italic = CONTENT_ITALIC
+                run.font.name = 'Century Gothic'
+
+    # ─────────────────────────────────────────────────
+    # Tasks table
+    # ─────────────────────────────────────────────────
 
     @staticmethod
     def _label_cell(cell, text: str) -> None:
-        """Shade a cell gray and bold the text (header/label style)."""
         cell.text = text
         cell.paragraphs[0].runs[0].bold = True
         WordService._shade_cell(cell, "F2F2F2")
@@ -480,24 +512,8 @@ class WordService:
             row.cells[3].text = task.status
             row.cells[4].text = f"{task.progress_pct}%"
             row.cells[5].text = task.sprint
-
-    # ─────────────────────────────────────────────────
-    # Conclusions
-    # ─────────────────────────────────────────────────
-
-    def _build_conclusions(self, doc: Document, report: GeneratedReport) -> None:
-        doc.add_heading("Conclusiones y Recomendaciones", level=1)
-        for para in report.conclusions.split("\n"):
-            if para.strip():
-                doc.add_paragraph(para.strip())
-
-    def _build_next_steps(self, doc: Document, report: GeneratedReport) -> None:
-        if not report.next_steps:
-            return
-        doc.add_heading("Próximos Pasos", level=2)
-        for step in report.next_steps:
-            p = doc.add_paragraph(style="List Bullet")
-            p.add_run(step)
+            for cell in row.cells:
+                self._apply_content_font(cell)
 
     # ─────────────────────────────────────────────────
     # Helpers
@@ -523,10 +539,39 @@ class WordService:
         run._r.append(br)
 
     @staticmethod
+    def _lock_table_width(tbl, width) -> None:
+        from docx.oxml.ns import qn as _qn
+        tblPr = tbl._tbl.tblPr
+        for old in tblPr.findall(_qn("w:tblW")):
+            tblPr.remove(old)
+        tblW = OxmlElement("w:tblW")
+        tblW.set(_qn("w:w"), str(width.twips))
+        tblW.set(_qn("w:type"), "dxa")
+        tblPr.append(tblW)
+        tblLayout = OxmlElement("w:tblLayout")
+        tblLayout.set(_qn("w:type"), "fixed")
+        for old in tblPr.findall(_qn("w:tblLayout")):
+            tblPr.remove(old)
+        tblPr.append(tblLayout)
+
+    @staticmethod
+    def _set_cell_width(cell, width) -> None:
+        from docx.oxml.ns import qn as _qn
+        tc = cell._tc
+        tcPr = tc.get_or_add_tcPr()
+        for old in tcPr.findall(_qn("w:tcW")):
+            tcPr.remove(old)
+        tcW = OxmlElement("w:tcW")
+        tcW.set(_qn("w:w"), str(width.twips))
+        tcW.set(_qn("w:type"), "dxa")
+        tcPr.append(tcW)
+
+    @staticmethod
     def _style_header_cell(cell, text: str | None = None) -> None:
         if text:
             cell.text = text
-        cell.paragraphs[0].runs[0 if cell.paragraphs[0].runs else -1].bold = True if cell.paragraphs[0].runs else None
+        if cell.paragraphs[0].runs:
+            cell.paragraphs[0].runs[0].bold = True
         WordService._shade_cell(cell, HEADER_BG)
         if cell.paragraphs[0].runs:
             cell.paragraphs[0].runs[0].font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
@@ -544,7 +589,6 @@ class WordService:
 
     @staticmethod
     def _vcenter(cell) -> None:
-        """Set vertical alignment to CENTER for a table cell."""
         tc = cell._tc
         tcPr = tc.get_or_add_tcPr()
         vAlign = OxmlElement("w:vAlign")
