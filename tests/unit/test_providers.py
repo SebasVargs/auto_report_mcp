@@ -137,8 +137,11 @@ class TestAIServiceWithMockProvider:
         report = svc.generate_report(daily_input, style_context)
 
         assert report.project_name == "Proyecto Test"
-        assert report.executive_summary == "Resumen de prueba."
-        assert len(report.sections) == 4
+        # For functional/integration/unit test reports, executive_summary is intentionally
+        # empty because content lives in per-case tables in the Word document.
+        assert report.executive_summary == ""
+        # Sections are also empty for test reports (content goes into individual case tables)
+        assert report.sections == []
 
 
 # ─────────────────────────────────────────────────────────────

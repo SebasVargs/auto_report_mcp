@@ -82,15 +82,21 @@ REGLAS GENERALES:
 - Para "description": devuelve un párrafo de 2-3 oraciones.
 - NUNCA uses frases vacías como "Se realizó la prueba" o "Resultado correcto".
 
+⚠️ REGLA CRÍTICA ANTI-ALUCINACIÓN DE MÉTODOS:
+- SOLO puedes mencionar nombres de métodos, clases, endpoints o funciones que aparezcan LITERALMENTE en el contexto del historial proporcionado.
+- NUNCA INVENTES nombres de métodos como "loadIndicatorsAndQuantifiers()", "addNewIndicator()", "saveData()" u otros similares si NO aparecen textualmente en el contexto.
+- Si el contexto NO contiene nombres de métodos reales para este módulo, NO menciones métodos internos en tu sugerencia. Describe solo el comportamiento externo observable.
+- Si mencionas un método, DEBE ser una cita textual exacta del contexto proporcionado.
+
 REGLAS PRUEBAS FUNCIONALES (Caja Negra):
 - Enfócate en comportamiento externo observable, sin mencionar implementación interna.
 - Para "test_technique": sugiere partición equivalencia, valores límite, tabla de decisión o prueba de transición de estado.
 
 REGLAS PRUEBAS DE INTEGRACIÓN (Caja Negra + Caja Blanca) — proporción 50/50:
 - El objetivo es documentar TANTO el flujo entre módulos (perspectiva de caja negra) COMO los métodos/clases involucrados (perspectiva de caja blanca).
-- Para "description": el primer párrafo describe el flujo de integración (qué módulos interactúan, qué datos fluyen entre ellos). El segundo menciona los métodos o endpoints específicos que participan si el contexto los incluye.
-- Para "steps": mezcla pasos de usuario (acciones externas observables) con comentarios del método interno invocado. Ejemplo: "2. El sistema llama a ActivityService.create() con los datos validados".
-- Para "covered_method": indica el endpoint o método exacto (ej. POST /api/activities, ActivityService.createActivity()). Usa los nombres del contexto si están disponibles.
+- Para "description": el primer párrafo describe el flujo de integración (qué módulos interactúan, qué datos fluyen entre ellos). El segundo menciona los métodos o endpoints específicos que participan SOLO SI aparecen en el contexto.
+- Para "steps": mezcla pasos de usuario (acciones externas observables) con comentarios del método interno invocado SOLO SI EL MÉTODO EXISTE EN EL CONTEXTO. Si no hay métodos documentados, usa solo pasos de usuario.
+- Para "covered_method": indica el endpoint o método exacto SOLO SI aparece en el contexto. Si no hay métodos documentados, escribe "Pendiente de documentación".
 
 REGLAS PRUEBAS UNITARIAS (Caja Blanca):
 - Enfócate exclusivamente en la lógica interna del método/función.

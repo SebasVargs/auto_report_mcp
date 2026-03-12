@@ -104,24 +104,87 @@ python cli.py
 
 ---
 
-## 🧠 Arquitectura de Prompts & Test Types
+## 🧠 RAG v2 — Sistema de Recuperación Refactorizado
 
-El sistema cuenta con manejo modular según la metodología:
-- `FUNCTIONAL_TESTS`: Captura ejecución, entrada/condiciones, resultados esperados y reales en ambiente de prueba (Caja Negra).
-- `INTEGRATION_TESTS`: Incluye campos mixtos para evaluar integración, como validaciones de método, y tipo/porcentaje de Cobertura (Caja Mixta).
-- `UNIT_TESTS`: Solicita exclusivamente variables de entorno de dependencias y código, como **Covered Class**, **Covered Method** y **Test Framework** (ej. Jest/PyTest) (Caja Blanca).
+El sistema RAG fue refactorizado para resolver problemas de mezcla de tipos de prueba, métodos inventados por el LLM, y notas diarias ignoradas.
 
-Cada uno procesado en `word_service.py` hacia un template matriz unificado pero variante algorítmicamente para el .docx final.
+### 4 Colecciones ChromaDB
 
----
+| Colección | Contenido | DocTypes |
+|-----------|-----------|----------|
+| `unit_tests` | Tests unitarios con mocks/stubs | `UNIT_TEST` |
+| `integration_tests` | Tests con DB/HTTP/API | `INTEGRATION_TEST` |
+| `functional_tests` | Tests e2e/browser/Gherkin | `FUNCTIONAL_TEST` |
+| `project_docs` | Docs de métodos, proyecto, notas diarias | `METHOD_DOC`, `PROJECT_DOC`, `DAILY_NOTE` |
 
-## ⚡ Pruebas
+### Módulos RAG v2
+
+```text
+app/rag/
+├── rag_schema.py                    # DocType, CollectionName, DocumentMetadata
+├── docx_reader.py                   # Lector enriquecido de .docx
+├── collection_manager.py            # Inicialización de 4 colecciones
+├── document_classifier.py           # Clasificador automático de documentos
+├── structural_chunker.py            # Chunking por unidad lógica
+├── document_ingestion_pipeline_v2.py # Pipeline de ingestión con clasificación
+├── query_router.py                  # TestAwareQueryRouter (reemplaza Multi-Query)
+├── method_validator.py              # Validador anti-alucinaciones
+├── semantic_cache.py                # Caché semántico de resultados
+├── rag_system.py                    # Orquestador principal (TestRAGSystem)
+└── migrate_to_v2.py                 # Script de migración legacy → v2
+```
+
+### Cómo agregar una Daily Note
+
+```python
+from app.rag.rag_system import TestRAGSystem
+
+system = TestRAGSystem()
+system.add_daily_note(
+    "Hoy migré el módulo de pagos a la nueva API. "
+    "El método processPayment ahora retorna PaymentResult.",
+    date="2024-01-15"  # opcional, default = hoy
+)
+```
+
+Las notas diarias siempre aparecen **primero** en el contexto recuperado con `priority_score = 2.0`.
+
+### Cómo ingestar documentos .docx de métodos
+
+```python
+system.add_document("docs/UserService.docx")
+# O un directorio completo:
+system.add_directory("docs/", recursive=True)
+```
+
+### Formato esperado de .docx para detección correcta
+
+Para que el clasificador detecte correctamente un `.docx` como documentación de métodos:
+
+1. **Heading 1**: Nombre del componente (ej: `UserService`)
+2. **Párrafos normales**: Descripción general
+3. **Bloques de código** (fuente Courier New/Consolas): Firmas de métodos
+4. **Tablas**: Parámetros, retornos, etc.
+
+Ejemplo de estructura:
+- `Heading 1: "UserService"`
+- Párrafo: "Maneja el ciclo de vida de usuarios"
+- Código (Courier): `def save_user(self, user: UserDTO) -> User:`
+- Código (Courier): `def find_by_id(self, user_id: int) -> Optional[User]:`
+
+### Migración de datos legacy
 
 ```bash
-pytest
+# Dry run (sin escribir datos):
+python -m app.rag.migrate_to_v2 --dry-run
+
+# Migración real:
+python -m app.rag.migrate_to_v2
 ```
-Soporta pruebas unitarias y validación general de componentes de negocio de la carpeta `tests/`.
+
+La colección legacy NO se elimina automáticamente (se mantiene como backup).
 
 ---
 
 **AutomatizationAI** fue construido enfocándose en la minimización de tiempos de reporte manual, centralización del contexto de negocio, y diseño arquitectónico limpio a nivel de prompts y componentes.
+

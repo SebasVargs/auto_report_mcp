@@ -71,29 +71,26 @@ class KnowledgeRetriever:
         history: list[dict],
         top_k: int = 10,
     ) -> str:
-        """
-        RAG-based Q&A with multi-turn conversation history.
-
-        Args:
-            question: Current user question.
-            history:  Previous turns as [{"role": "user"|"assistant", "content": "..."}].
-                      Pass [] for a stateless call.
-            top_k:    Number of RAG fragments to retrieve.
-
-        Returns:
-            Natural-language answer string.
-        """
-        fragments = self._retrieve_and_boost(question, top_k=top_k)
-
-        if not fragments:
+        """Proxies context retrieval to TestRAGSystem, but answers using LLMProvider."""
+        from app.rag.rag_system import TestRAGSystem
+        # We don't pass an LLM callable to TestRAGSystem because we just
+        # want to use it to retrieve the chunks and intent.
+        sys = TestRAGSystem()
+        
+        # 1. Retrieve chunks using the V2 router
+        result = sys._router.route(question, sys._collections, top_k=top_k)
+        
+        if not result.chunks:
             return (
                 "No se encontró información relevante en la base de conocimiento "
                 "para responder esta pregunta. Considera alimentar el sistema con "
                 "más notas o reportes del proyecto."
             )
 
-        context_block = self._build_context_block(fragments)
+        # 2. Build context block
+        context_block = sys._build_context(result.chunks)
 
+        # 3. Build prompts
         user_prompt = (
             "CONTEXTO DEL PROYECTO (fragmentos recuperados para esta pregunta):\n"
             f"{context_block}\n\n"
@@ -102,6 +99,7 @@ class KnowledgeRetriever:
             'Responde con JSON: {"answer": "<respuesta completa>"}'
         )
 
+        # 4. Call the LLM
         try:
             # Preferred path: provider supports multi-turn natively
             response = self._provider.chat_json_with_history(
@@ -127,74 +125,52 @@ class KnowledgeRetriever:
 
         return response.get("answer", "No se pudo generar una respuesta.")
 
-    def retrieve_for_suggestion(self, query: str, top_k: int = 4) -> str:
+    def retrieve_for_suggestion(self, query: str, top_k: int = 8) -> str:
+        """Retrieve context for test-case suggestions.
+
+        Bypasses the router's intent detection (which misclassifies
+        suggestion queries as 'wants test') and queries project_docs
+        directly, prioritising method documentation so the LLM never
+        needs to invent method names.
         """
-        Plain-text context for InteractiveNarrativeAssistant suggestions.
-        Applies the same recency boost.
-        """
-        fragments = self._retrieve_and_boost(query, top_k=top_k)
-        if not fragments:
+        from app.rag.rag_system import TestRAGSystem
+        sys = TestRAGSystem()
+        embedding = self._emb.embed(query)
+
+        all_chunks: list[dict] = []
+        col = "project_docs"
+
+        # 1. Method docs — highest priority for grounding method names
+        method_chunks = sys._router._query_collection(
+            col, embedding, top_k, where={"doc_type": "method_doc"},
+        )
+        all_chunks.extend(method_chunks)
+
+        # 2. General project docs (may include architecture, flows, etc.)
+        general_chunks = sys._router._query_collection(
+            col, embedding, top_k,
+        )
+        all_chunks.extend(general_chunks)
+
+        # 3. Daily notes (user knowledge, recent context)
+        note_chunks = sys._router._query_collection(
+            col, embedding, 3, where={"is_daily_note": True},
+        )
+        if note_chunks:
+            all_chunks = note_chunks + all_chunks
+
+        # Deduplicate by id
+        seen: set[str] = set()
+        unique: list[dict] = []
+        for c in all_chunks:
+            cid = c.get("id", str(id(c)))
+            if cid not in seen:
+                seen.add(cid)
+                unique.append(c)
+
+        if not unique:
             return ""
-        return self._build_context_block(fragments)
-
-    # ─────────────────────────────────────────────────
-    # Retrieval + Recency Boost
-    # ─────────────────────────────────────────────────
-
-    def _retrieve_and_boost(self, query: str, top_k: int) -> list[dict]:
-        raw = self._retrieve_raw(query, top_k=top_k * 2)
-        if not raw:
-            return []
-
-        boosted = []
-        for frag in raw:
-            score = frag.get("relevance_score", 0.0)
-            # Filter out completely irrelevant matches to prevent LLM hallucination
-            if score < 0.25:
-                continue
-                
-            ftype = frag.get("metadata", {}).get("type", "context_report")
-            if ftype == "note":
-                score *= _NOTE_BOOST
-            boosted.append({**frag, "relevance_score": score})
-
-        boosted.sort(key=lambda f: f["relevance_score"], reverse=True)
-        return boosted[:top_k]
-
-    def _retrieve_raw(self, query: str, top_k: int) -> list[dict]:
-        try:
-            embedding = self._emb.embed(query)
-            results   = self._vs.query(
-                collection_name=self._collection,
-                query_embedding=embedding,
-                top_k=top_k,
-            )
-            return results or []
-        except Exception as e:
-            logger.warning(f"Knowledge retrieval failed for query '{query[:60]}': {e}")
-            return []
-
-    # ─────────────────────────────────────────────────
-    # Formatting helpers
-    # ─────────────────────────────────────────────────
-
-    @staticmethod
-    def _build_context_block(fragments: list[dict]) -> str:
-        lines = []
-        for i, frag in enumerate(fragments, 1):
-            meta       = frag.get("metadata", {})
-            source     = meta.get("source", "desconocido")
-            ftype      = meta.get("type", "context_report")
-            ts         = meta.get("timestamp", "")
-            score      = frag.get("relevance_score", 0.0)
-            content    = frag.get("content", "").strip()
-            type_label = "NOTA DE USUARIO ★" if ftype == "note" else "Reporte"
-            date_label = f" | {ts[:10]}" if ts else ""
-            lines.append(
-                f"[Fragmento {i} | {type_label}{date_label} | "
-                f"Fuente: {source} | Score: {score:.2f}]\n{content}"
-            )
-        return "\n\n---\n\n".join(lines)
+        return sys._build_context(unique[:top_k])
 
     @staticmethod
     def _history_to_text(history: list[dict]) -> str:

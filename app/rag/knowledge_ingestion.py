@@ -45,184 +45,51 @@ class KnowledgeIngestionPipeline:
     # ─────────────────────────────────────────────────
 
     def ingest_text_note(self, note: str) -> int:
-        """
-        Chunk, embed and store a free-text note in the knowledge collection.
-        Each chunk is prefixed with [NOTA DEL USUARIO - <datetime>] so the LLM
-        reads the recency signal before processing content.
-        Returns the number of chunks stored.
-        """
-        if not note.strip():
-            return 0
-
-        now       = datetime.now(tz=timezone.utc)
-        now_iso   = now.isoformat()
-        now_label = now.strftime("%Y-%m-%d %H:%M UTC")
-
-        chunks = self._chunk_text(note)
-        all_chunks: list[dict] = []
-        for chunk in chunks:
-            dated_chunk = f"[NOTA DEL USUARIO - {now_label}]\n{chunk}"
-            chunk_id    = f"note_{hashlib.md5(dated_chunk.encode()).hexdigest()}"
-            
-            all_chunks.append({
-                "id": chunk_id,
-                "content": dated_chunk,
-                "metadata": {
-                    "source":    "user_note",
-                    "type":      "note",
-                    "timestamp": now_iso,
-                }
-            })
-
-        if all_chunks:
-            texts = [c["content"] for c in all_chunks]
-            embeddings = self._emb.embed_batch(texts)
-            self._vs.add_chunks(
-                collection_name=self._collection,
-                chunks=all_chunks,
-                embeddings=embeddings,
-            )
-
-        logger.info(
-            f"Ingested user note ({now_label}) → {len(chunks)} chunk(s) "
-            f"into '{self._collection}'"
-        )
-        return len(chunks)
+        """Proxies note ingestion to TestRAGSystem."""
+        from app.rag.rag_system import TestRAGSystem
+        sys = TestRAGSystem()
+        res = sys.add_daily_note(note)
+        return res.chunks_created
 
     def find_similar_notes(self, text: str, threshold: float = 0.4) -> list[dict]:
-        """
-        Embed ``text`` and search the knowledge collection for existing note
-        chunks (type="note") with a relevance_score >= threshold.
-
-        Returns a list of matching chunk dicts (id, content, metadata,
-        relevance_score), sorted by relevance descending.
-        Only notes are searched — context_report chunks are excluded.
-        """
+        """Proxy to search daily notes via VectorStore."""
         if not text.strip():
             return []
-
-        query_embedding = self._emb.embed_batch([text])[0]
+        emb = self._emb.embed_batch([text])[0]
         results = self._vs.query(
-            collection_name=self._collection,
-            query_embedding=query_embedding,
+            collection_name="project_docs",
+            query_embedding=emb,
             top_k=5,
-            where={"type": "note"},
+            where={"doc_type": "DAILY_NOTE"},
         )
-        similar = [r for r in results if r["relevance_score"] >= threshold]
-        logger.debug(
-            f"find_similar_notes: {len(similar)} match(es) above threshold {threshold}"
-        )
-        return similar
+        return [r for r in results if r.get("relevance_score", 0) >= threshold]
 
     def delete_notes(self, note_ids: list[str]) -> None:
-        """
-        Remove specific note chunks from the knowledge collection by their IDs.
-        Called during smart consolidation after the user confirms a merge.
-        """
         if not note_ids:
             return
-        self._vs.delete_chunks(
-            collection_name=self._collection,
-            ids=note_ids,
-        )
-        logger.info(f"Deleted {len(note_ids)} note chunk(s) from '{self._collection}'")
+        self._vs.delete_chunks("project_docs", ids=note_ids)
+        logger.info(f"Deleted {len(note_ids)} notes from project_docs")
 
     def ingest_all_context_reports(self, force: bool = False) -> dict[str, int]:
-        """
-        Scan context_reports/ for .docx files not yet in the registry.
-        Each chunk is prefixed with [REPORTE: <filename> - <date>] using the
-        file's modification date so relative recency is visible to the LLM.
-        Returns {filename: chunk_count} for newly ingested files.
-
-        Args:
-            force: If True, skip the registry check and always re-ingest every file.
-        """
+        """Proxies directory ingestion to TestRAGSystem."""
         context_dir = Path(settings.context_reports_dir)
         if not context_dir.exists():
-            logger.warning(f"context_reports dir not found: {context_dir}")
             return {}
+        
+        from app.rag.rag_system import TestRAGSystem
+        sys = TestRAGSystem()
+        
+        # Ingest directory uses IngestionPipelineV2 which natively skips real duplicates
+        results = sys.add_directory(str(context_dir), recursive=False)
+        return {r.source: r.chunks_created for r in results if r.chunks_created > 0}
 
-        registry = self._load_registry()
-        results: dict[str, int] = {}
-
-        # 1. Purge from DB and registry any files that were deleted from disk
-        local_files = {p.name for p in context_dir.glob("*.docx")}
-        missing = [(h, fn) for h, fn in registry.items() if fn not in local_files]
-        for file_hash, fname in missing:
-            self._vs.delete_by_metadata(
-                collection_name=self._collection,
-                where={"source": fname}
-            )
-            del registry[file_hash]
-            logger.info(f"🗑️  Purged chunks for deleted report: {fname}")
-
-        # 2. Ingest valid files
-
-        for docx_path in sorted(context_dir.glob("*.docx")):
-            file_hash = self._file_hash(docx_path)
-            if not force and file_hash in registry:
-                logger.debug(f"Skipping already-ingested: {docx_path.name}")
-                continue
-
-            mtime       = datetime.fromtimestamp(docx_path.stat().st_mtime, tz=timezone.utc)
-            mtime_iso   = mtime.isoformat()
-            mtime_label = mtime.strftime("%Y-%m-%d")
-
-            text = self._extract_docx_text(docx_path)
-            if not text.strip():
-                logger.warning(f"Empty text from {docx_path.name}, skipping.")
-                continue
-
-            chunks = self._chunk_text(text)
-            all_chunks: list[dict] = []
-            for idx, chunk in enumerate(chunks):
-                dated_chunk = f"[REPORTE: {docx_path.name} - {mtime_label}]\n{chunk}"
-                # ID = file hash prefix + chunk index → unique per file, no content collisions
-                chunk_id    = f"report_{file_hash[:16]}_{idx:04d}"
-
-                all_chunks.append({
-                    "id": chunk_id,
-                    "content": dated_chunk,
-                    "metadata": {
-                        "source":    docx_path.name,
-                        "type":      "context_report",
-                        "timestamp": mtime_iso,
-                    }
-                })
-
-
-            if all_chunks:
-                texts = [c["content"] for c in all_chunks]
-                embeddings = self._emb.embed_batch(texts)
-                self._vs.add_chunks(
-                    collection_name=self._collection,
-                    chunks=all_chunks,
-                    embeddings=embeddings,
-                )
-
-            registry[file_hash] = docx_path.name
-            results[docx_path.name] = len(chunks)
-            logger.info(f"Ingested '{docx_path.name}' ({mtime_label}) → {len(chunks)} chunk(s)")
-
-        self._save_registry(registry)
-        return results
 
     def force_reingest_file(self, docx_path: Path) -> int:
-        """
-        Remove the registry entry for a specific .docx file and re-ingest it.
-        Useful when a file was downloaded but ChromaDB never received its chunks,
-        or after manually updating the file.
-        Returns the number of new chunks stored.
-        """
-        registry  = self._load_registry()
-        file_hash = self._file_hash(docx_path)
-        removed   = registry.pop(file_hash, None)
-        if removed:
-            logger.info(f"Cleared registry entry for '{docx_path.name}' (hash: {file_hash[:8]}…)")
-        self._save_registry(registry)
-        # Now ingest normally — it will no longer be skipped
-        result = self.ingest_all_context_reports()
-        return result.get(docx_path.name, 0)
+        """Proxies force reingestion by just calling add_document."""
+        from app.rag.rag_system import TestRAGSystem
+        sys = TestRAGSystem()
+        res = sys.add_document(str(docx_path))
+        return res.chunks_created
 
     # ─────────────────────────────────────────────────
     # Text extraction
@@ -263,28 +130,3 @@ class KnowledgeIngestionPipeline:
                 chunks.append(chunk)
             i += chunk_words - overlap_words
         return chunks
-
-    # ─────────────────────────────────────────────────
-    # Registry helpers
-    # ─────────────────────────────────────────────────
-
-    @staticmethod
-    def _file_hash(path: Path) -> str:
-        return hashlib.md5(path.read_bytes()).hexdigest()
-
-    @staticmethod
-    def _load_registry() -> dict:
-        if _REGISTRY_PATH.exists():
-            try:
-                return json.loads(_REGISTRY_PATH.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                return {}
-        return {}
-
-    @staticmethod
-    def _save_registry(registry: dict) -> None:
-        _REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _REGISTRY_PATH.write_text(
-            json.dumps(registry, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )

@@ -254,22 +254,37 @@ def _collect_narratives_guided(
     test_cases = list(prefilled)
     total      = len(images)
 
-    for img in pending_images:
-        global_index = image_names.index(img.name) + 1
-        tc = _collect_test_case_guided(
-            img.name, global_index, total, assistant, report_type=report_type
-        )
-        tc["evidence_image_filename"] = img.name
-        tc["test_id"]      = str(global_index)
-        tc["prepared_by"]  = metadata.get("prepared_by", "")
-        tc["tested_by"]    = metadata.get("prepared_by", "")
-        tc["prepare_date"] = metadata.get("report_date", "")
-        tc["test_date"]    = metadata.get("report_date", "")
-        test_cases.append(tc)
+    try:
+        for img in pending_images:
+            global_index = image_names.index(img.name) + 1
+            tc = _collect_test_case_guided(
+                img.name, global_index, total, assistant, report_type=report_type
+            )
+            tc["evidence_image_filename"] = img.name
+            tc["test_id"]      = str(global_index)
+            tc["prepared_by"]  = metadata.get("prepared_by", "")
+            tc["tested_by"]    = metadata.get("prepared_by", "")
+            tc["prepare_date"] = metadata.get("report_date", "")
+            tc["test_date"]    = metadata.get("report_date", "")
+            test_cases.append(tc)
 
-        if session:
+            if session:
+                session.save(metadata, image_names, test_cases)
+                print_info(f"Progreso guardado ({len(test_cases)}/{total})")
+
+    except (KeyboardInterrupt, EOFError):
+        # User pressed Ctrl+C or the terminal was closed.
+        # Save whatever has been completed so the session can be resumed.
+        console.print()
+        if test_cases and session:
             session.save(metadata, image_names, test_cases)
-            print_info(f"Progreso guardado ({len(test_cases)}/{total})")
+            print_warn(
+                f"Sesión interrumpida. {len(test_cases)} caso(s) guardado(s). "
+                "La próxima vez que ejecutes la CLI podrás retomar desde aquí."
+            )
+        else:
+            print_warn("Sesión interrumpida. No había casos completados para guardar.")
+        raise  # Re-raise so the caller knows we exited early
 
     return test_cases
 
@@ -295,13 +310,32 @@ def _build_daily_input_from_test_cases(test_cases: list[dict], metadata: dict) -
 # ─────────────────────────────────────────────────────────────────
 
 def action_generate() -> None:
+    import signal
     section("Generar informe")
 
-    # ── Session recovery ─────────────────────────────────────────
+    # ── Session objects (defined early so signal handler can close over them) ──
     session          = ReportSessionManager()
     prefilled_cases: list[dict] = []
     session_metadata: dict      = {}
 
+    def _emergency_save(signum, frame) -> None:  # noqa: ANN001
+        """Called when SIGTERM or SIGHUP is received (terminal closed, kill, etc.)."""
+        if session_metadata and prefilled_cases:
+            session.save(session_metadata, [], prefilled_cases)
+            print_warn(
+                "\nProceso terminado de forma abrupta. "
+                f"{len(prefilled_cases)} caso(s) guardado(s). "
+                "Puedes retomar la sesión la próxima vez que ejecutes la CLI."
+            )
+        raise SystemExit(1)
+
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, _emergency_save)
+        except (OSError, ValueError):
+            pass  # SIGHUP not available on Windows, ignore
+
+    # ── Session recovery ─────────────────────────────────────────
     if session.exists():
         session_recovery_panel(session.summary())
         recovery_choice = questionary.select(
@@ -436,9 +470,16 @@ def action_generate() -> None:
         ai = AIService()
 
         if images and report_type in _TEST_TYPES:
-            test_cases       = _collect_narratives_guided(
-                images, metadata, session=session, prefilled_cases=prefilled_cases
-            )
+            try:
+                test_cases = _collect_narratives_guided(
+                    images, metadata, session=session, prefilled_cases=prefilled_cases
+                )
+            except (KeyboardInterrupt, EOFError, SystemExit):
+                # Session was already saved inside _collect_narratives_guided.
+                # Just exit cleanly.
+                console.print()
+                print_warn("Proceso detenido. Puedes retomar la sesión la próxima vez.")
+                return
             daily_input_dict = _build_daily_input_from_test_cases(test_cases, metadata)
 
             with spinning("Validando y guardando JSON estructurado…"):
