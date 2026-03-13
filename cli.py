@@ -126,6 +126,7 @@ def _collect_test_case_guided(
     total_cases: int,
     assistant,
     report_type: str = "functional_tests",
+    project_name: str = "",
 ) -> dict:
     from app.services.interactive_narrative_assistant import (
         TestCaseDraft,
@@ -140,7 +141,7 @@ def _collect_test_case_guided(
     case_rule(image_name, case_index, total_cases, report_type)
 
     draft = TestCaseDraft()
-    draft.module    = questionary.text("  Módulo evaluado:", style=MENU_STYLE).ask() or ""
+    draft.module    = project_name
     draft.test_name = questionary.text(
         "  Nombre del caso (ej. CP-01: Login con credenciales válidas):",
         style=MENU_STYLE,
@@ -258,7 +259,12 @@ def _collect_narratives_guided(
         for img in pending_images:
             global_index = image_names.index(img.name) + 1
             tc = _collect_test_case_guided(
-                img.name, global_index, total, assistant, report_type=report_type
+                img.name, 
+                global_index, 
+                total, 
+                assistant, 
+                report_type=report_type,
+                project_name=metadata.get("project_name", ""),
             )
             tc["evidence_image_filename"] = img.name
             tc["test_id"]      = str(global_index)

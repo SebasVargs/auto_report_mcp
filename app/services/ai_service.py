@@ -194,7 +194,6 @@ Responde con JSON:
             passed  = sum(1 for t in data.test_cases if t.status == "PASS")
             failed  = sum(1 for t in data.test_cases if t.status == "FAIL")
             blocked = sum(1 for t in data.test_cases if t.status == "BLOCKED")
-            modules = list({t.module for t in data.test_cases if t.module})
             defects = [d for t in data.test_cases for d in (t.defects or [])]
 
             extra_context = ""
@@ -222,7 +221,6 @@ Responde con JSON:
             test_context = (
                 f"- Total de casos ejecutados: {total}\n"
                 f"- Aprobados: {passed} | Fallidos: {failed} | Bloqueados: {blocked}\n"
-                f"- Módulos/componentes evaluados: {', '.join(modules) if modules else 'N/A'}\n"
                 f"- Defectos registrados: {json.dumps(defects, ensure_ascii=False) if defects else 'Ninguno'}\n"
                 f"{extra_context}"
             )
